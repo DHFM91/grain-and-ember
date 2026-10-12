@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Grain &amp; Ember</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+/* Layout: one black simulation stage filling the screen, a slim instrument-style toolbar docked at the bottom, a rules sheet that slides over the stage. Single dark look by design (the sim is a black screen). */
+:root {
+  --void: #000000;
+  --panel: #0d0f10;
+  --line: #24282a;
+  --ink: #e6e2d8;
+  --dim: #8a8f8c;
+  --ember: #ff8a2a;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--void); color: var(--ink); font-family: var(--mono); font-size: 13px;
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+#stage { position: relative; flex: 1; min-height: 0; background: var(--void); }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; touch-action: none; cursor: crosshair; display: block; }
+#probe { position: absolute; left: 0; top: 0; pointer-events: none; font: 11px var(--mono); color: var(--ink); background: rgba(0,0,0,.6); padding: 1px 5px; border-radius: 2px; white-space: nowrap; }
+#hint { position: absolute; left: 16px; top: 12px; color: var(--dim); font-size: 12px; pointer-events: none; transition: opacity .6s; }
+#hint b { font-family: var(--display); color: var(--ink); font-size: 15px; letter-spacing: .04em; display: block; margin-bottom: 2px; }
+
+.bar {
+  background: var(--panel); border-top: 1px solid var(--line);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+}
+.tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool {
+  font: 500 12px var(--mono); color: var(--ink); background: transparent;
+  border: 1px solid var(--line); border-radius: 3px; padding: 7px 10px 7px 8px;
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+}
+.tool i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.tool kbd { color: var(--dim); font: 11px var(--mono); }
+.tool[aria-pressed="true"] { border-color: var(--ink); background: #1a1d1e; }
+.tool:focus-visible, .btn:focus-visible, input:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.brush { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.brush input { width: 110px; accent-color: var(--ember); }
+.brush output { color: var(--ink); min-width: 2ch; font-variant-numeric: tabular-nums; }
+.actions { display: flex; gap: 6px; margin-left: auto; }
+.btn { font: 500 12px var(--mono); color: var(--dim); background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 7px 10px; cursor: pointer; }
+.btn:hover, .tool:hover { color: var(--ink); border-color: #3a3f41; }
+
+#rules {
+  position: absolute; inset: 0; background: rgba(0,0,0,.88); overflow: auto;
+  padding: 24px 16px;
+}
+.sheet { max-width: 860px; margin: 0 auto; display: grid; gap: 20px; }
+.sheet h2 { font: 600 20px var(--display); letter-spacing: .03em; margin: 0; text-wrap: balance; }
+.sheet h3 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin: 0 0 8px; }
+.sheet p { color: var(--dim); max-width: 65ch; margin: 0; line-height: 1.55; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 12px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.45; }
+th { color: var(--dim); font-weight: 500; text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 7px; vertical-align: -1px; }
+ul.rx { margin: 0; padding-left: 18px; color: var(--ink); line-height: 1.6; max-width: 70ch; }
+ul.rx li::marker { color: var(--ember); }
+.close-row { display: flex; justify-content: flex-end; }
+@media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
+@media (max-width: 560px) { .actions { margin-left: 0; } .tool kbd { display: none; } }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="view" aria-label="Falling sand simulation. Drag to paint the selected element."></canvas>
+  <div id="probe" hidden></div>
+  <div id="hint"><b>GRAIN &amp; EMBER</b>Pick an element, then drag on the black to paint.</div>
+  <section id="rules" hidden aria-label="Element rules">
+    <div class="sheet">
+      <div class="close-row"><button class="btn" id="closeRules">Close rules (R)</button></div>
+      <h2>Element rules</h2>
+      <p>Every cell is one pixel of one element. Each tick, the grid is scanned bottom to top (alternating left/right per row so nothing drifts one way). A moving cell may swap into a neighbor if that neighbor is empty, or is a movable element with lower density (for falling) or higher density (for rising).</p>
+      <div><h3>Properties</h3><div class="tablewrap"><table id="propTable"></table></div></div>
+      <div><h3>Interactions</h3><ul class="rx" id="rxList"></ul></div>
+    </div>
+  </section>
+</div>
+
+<div class="bar" role="toolbar" aria-label="Paint tools">
+  <div class="tools" id="tools"></div>
+  <label class="brush" for="size">Brush <input id="size" type="range" min="1" max="14" value="5"><output id="sizeOut">5</output></label>
+  <div class="actions">
+    <button class="btn" id="pause">Pause</button>
+    <button class="btn" id="clear">Clear</button>
+    <button class="btn" id="showRules">Rules</button>
+  </div>
+</div>
+
+<script id="core">
+// ===================== SIMULATION CORE (no DOM) =====================
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7;
+
+// Single source of truth for element behaviour. The rules sheet is generated from this table.
+const PROPS = [
+  { id: EMPTY, name: "Air",   state: "gas",    density: 1,   movable: true,  color: [0, 0, 0],
+    moves: "—", notes: "The black background. Anything denser falls through it." },
+  { id: EARTH, name: "Earth", state: "solid",  density: Infinity, movable: false, color: [118, 82, 52], hp: 10,
+    moves: "Never moves. Stays exactly where painted.", notes: "Has 10 integrity. Flowing water wears it down; at 0 it washes loose as mud." },
+  { id: SAND,  name: "Sand",  state: "powder", density: 16,  movable: true,  color: [214, 180, 112],
+    moves: "Falls straight down, else slides diagonally down. Piles into slopes.", notes: "Densest mover, so it sinks through water and oil (slowed by drag)." },
+  { id: WATER, name: "Water", state: "liquid", density: 10,  movable: true,  color: [38, 104, 222], disp: 5, drag: 0.5,
+    moves: "Falls, then flows sideways up to 5 cells per tick to level out.", notes: "Settles above sand, below oil. Puts out fire. Erodes earth while flowing." },
+  { id: OIL,   name: "Oil",   state: "liquid", density: 8,   movable: true,  color: [128, 86, 30], disp: 2, drag: 0.65, flammable: 0.09,
+    moves: "Falls, then flows sideways up to 2 cells per tick (thicker than water).", notes: "Lightest liquid, so it floats on water and sand. Flammable." },
+  { id: FIRE,  name: "Fire",  state: "energy", density: 0,   movable: false, color: [255, 140, 30], life: [22, 45], oilLife: [45, 95],
+    moves: "Stays where it was lit.", notes: "Burns out after 22–45 ticks (burning oil: 45–95). Leaves smoke." },
+  { id: SMOKE, name: "Smoke", state: "gas",    density: 0.4, movable: true,  color: [120, 120, 124], life: [60, 140],
+    moves: "Rises, billows diagonally, drifts sideways when blocked.", notes: "Lighter than air. Bubbles up through liquids. Fades and despawns after 60–140 ticks." },
+  { id: MUD,   name: "Mud",   state: "powder", density: 16,  movable: true,  color: [72, 50, 32], wet: 600, wick: 60,
+    moves: "Falls and piles like sand (same density), sinks through water and oil.", notes: "Made when water erodes earth. Once settled and dry for 600 ticks (~10 s) it hardens back into earth. Water contact, or wet mud next to it, keeps it moist." },
+];
+
+// Interaction tunables (per tick probabilities)
+const RULES = {
+  ignite: 0.09,          // chance per tick that fire ignites each touching oil cell
+  fireToSmoke: 0.7,      // chance a burnt-out fire leaves smoke (else just vanishes)
+  fireSmokePuff: 0.05,   // chance per tick a fire puffs smoke into empty space above it
+  quenchSteam: 0.2,      // chance the water that douses a fire is used up (turns to smoke/steam)
+  erosion: 0.35,         // chance a moving water cell scrapes 1 integrity off an adjacent earth cell
+};
+
+const INTERACTIONS = [
+  "Density order, bottom to top: Earth (fixed) → Sand 16 = Mud 16 → Water 10 → Oil 8 → Air 1 → Smoke 0.4.",
+  "Sand dropped on water or oil sinks through it, but drag makes it fall more slowly than through air.",
+  "Water poured onto oil sinks under it; oil poured into water rises to the top.",
+  "Fire touching oil ignites it (9% per tick per oil cell), so fire races across an oil slick and burns down through it.",
+  "Fire touching water goes out instantly and turns to smoke. 20% of the time the dousing water is used up as steam.",
+  "Every burnt-out fire leaves smoke 70% of the time; burning cells also puff smoke upward as they burn.",
+  "Smoke rises through air and bubbles up through water and oil, then fades away.",
+  "Moving water scrapes integrity off earth it brushes past (35% chance per moving cell per tick). Still pools don't erode. Worn-out earth washes loose as mud.",
+  "Mud falls and settles like sand. Sand and mud share a density, so neither sinks through the other.",
+  "Mud stays wet while it touches water. Wetness also seeps through connected mud, weakening with each cell, so a thick mud bank stays soft near the waterline.",
+  "Settled mud with no water nearby dries over about 10 seconds, darkening to earth color, then hardens back into fixed earth with full integrity.",
+  "Earth, mud, sand and water don't burn. Fire painted onto them just burns out.",
+];
+
+let W = 0, H = 0, N = 0;
+let type, life, shade, moved;
+let frame = 0;
+
+function allocGrid(w, h) {
+  const oldW = W, oldH = H, oT = type, oL = life, oS = shade;
+  W = w; H = h; N = w * h;
+  type = new Uint8Array(N); life = new Int16Array(N); shade = new Uint8Array(N); moved = new Uint8Array(N);
+  if (oT) { // keep overlapping content, anchored to the bottom
+    const dy = h - oldH;
+    for (let y = 0; y < oldH; y++) { const ny = y + dy; if (ny < 0 || ny >= h) continue;
+      for (let x = 0; x < Math.min(oldW, w); x++) { const a = y * oldW + x, b = ny * w + x; type[b] = oT[a]; life[b] = oL[a]; shade[b] = oS[a]; } }
+  }
+}
+const rnd = Math.random;
+const rint = (a, b) => a + ((rnd() * (b - a + 1)) | 0);
+
+function setCell(i, t) {
+  type[i] = t; shade[i] = (rnd() * 255) | 0;
+  if (t === EARTH) life[i] = PROPS[EARTH].hp;
+  else if (t === FIRE) life[i] = rint(...PROPS[FIRE].life);
+  else if (t === SMOKE) life[i] = rint(...PROPS[SMOKE].life);
+  else if (t === MUD) life[i] = PROPS[MUD].wet;
+  else life[i] = 0;
+}
+function move(i, j) {
+  const t = type[i], l = life[i], s = shade[i];
+  type[i] = type[j]; life[i] = life[j]; shade[i] = shade[j];
+  type[j] = t; life[j] = l; shade[j] = s;
+  moved[i] = 1; moved[j] = 1;
+}
+// Can mover m fall/slide downward into cell j?
+function fallInto(m, j) {
+  const tt = type[j];
+  if (tt === EMPTY) return true;
+  const P = PROPS[tt];
+  if (!P.movable || PROPS[m].density <= P.density) return false;
+  if (P.state === "liquid" && rnd() < P.drag) return false; // sinking through liquid is slower
+  return true;
+}
+// Can a gas rise into cell j? (air and liquids only, never lifts powders)
+function riseInto(j) { const tt = type[j]; return tt === EMPTY || PROPS[tt].state === "liquid"; }
+
+function updPowder(x, y, i, t) { // returns true if it moved
+  if (y + 1 >= H) return false;
+  const b = i + W;
+  if (fallInto(t, b)) { move(i, b); return true; }
+  const d = rnd() < 0.5 ? -1 : 1;
+  for (let s = d, n = 0; n < 2; n++, s = -s) { const nx = x + s; if (nx < 0 || nx >= W) continue;
+    if (fallInto(t, b + s)) { move(i, b + s); return true; } }
+  return false;
+}
+// Mud: falls like sand. While settled, life = moisture. Water refills it, wet neighbours wick into it,
+// otherwise it dries one tick at a time and hardens into earth at 0.
+function updMud(x, y, i) {
+  if (updPowder(x, y, i, MUD)) return; // still moving: no drying mid-fall
+  const P = PROPS[MUD];
+  for (let r = 0; r < 4; r++) {
+    const nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+    const n = ny * W + nx, tt = type[n];
+    if (tt === WATER) { life[i] = P.wet; return; }
+    if (tt === MUD && life[n] - P.wick > life[i]) life[i] = life[n] - P.wick;
+  }
+  if (--life[i] <= 0) { type[i] = EARTH; life[i] = PROPS[EARTH].hp; moved[i] = 1; }
+}
+function updLiquid(x, y, i, t) {
+  const P = PROPS[t]; let to = -1;
+  if (y + 1 < H) {
+    const b = i + W;
+    if (fallInto(t, b)) to = b;
+    else { const d = rnd() < 0.5 ? -1 : 1;
+      for (let s = d, n = 0; n < 2 && to < 0; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && fallInto(t, b + s)) to = b + s; } }
+  }
+  if (to < 0) { // spread sideways
+    const d = rnd() < 0.5 ? -1 : 1;
+    for (let s = d, n = 0; n < 2 && to < 0; n++, s = -s) {
+      for (let k = 1; k <= P.disp; k++) {
+        const nx = x + s * k; if (nx < 0 || nx >= W) break;
+        const j = i + s * k, tt = type[j];
+        if (tt === EMPTY) { to = j; if (y + 1 < H && type[j + W] === EMPTY) break; continue; }
+        // swap sideways with a lighter liquid (helps water slip under oil)
+        if (k === 1 && PROPS[tt].state === "liquid" && PROPS[tt].density < P.density && rnd() < 0.5) to = j;
+        break;
+      }
+    }
+  }
+  if (to >= 0) { move(i, to); if (t === WATER && rnd() < RULES.erosion) erodeAround(to); }
+}
+function erodeAround(j) {
+  const x = j % W, y = (j / W) | 0, r = (rnd() * 4) | 0;
+  const nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
+  if (nx < 0 || ny < 0 || nx >= W || ny >= H) return;
+  const n = ny * W + nx;
+  if (type[n] === EARTH && --life[n] <= 0) { type[n] = MUD; life[n] = PROPS[MUD].wet; moved[n] = 1; }
+}
+function updFire(x, y, i) {
+  life[i]--;
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if (tt === WATER) { // doused
+        setCell(i, SMOKE); moved[i] = 1;
+        if (rnd() < RULES.quenchSteam) { setCell(j, SMOKE); moved[j] = 1; }
+        return;
+      }
+      if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
+    } }
+  if (y > 0 && type[i - W] === EMPTY && rnd() < RULES.fireSmokePuff) { setCell(i - W, SMOKE); life[i - W] = rint(20, 50); moved[i - W] = 1; }
+  if (life[i] <= 0) { if (rnd() < RULES.fireToSmoke) setCell(i, SMOKE); else setCell(i, EMPTY); moved[i] = 1; }
+}
+function updGas(x, y, i) {
+  if (--life[i] <= 0) { type[i] = EMPTY; life[i] = 0; return; }
+  if (rnd() < 0.15) return; // lazy billow
+  if (y === 0) { life[i] -= 3; return; }
+  const u = i - W, d = rnd() < 0.5 ? -1 : 1;
+  if (rnd() < 0.7 && riseInto(u)) { move(i, u); return; }
+  for (let s = d, n = 0; n < 2; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && riseInto(u + s)) { move(i, u + s); return; } }
+  const nx = x + d; if (nx >= 0 && nx < W && type[i + d] === EMPTY) move(i, i + d);
+}
+function step() {
+  moved.fill(0);
+  for (let y = H - 1; y >= 0; y--) {
+    const ltr = ((y + frame) & 1) === 0;
+    for (let k = 0; k < W; k++) {
+      const x = ltr ? k : W - 1 - k, i = y * W + x;
+      if (moved[i]) continue;
+      const t = type[i];
+      if (t === EMPTY || t === EARTH) continue;
+      if (t === SAND) updPowder(x, y, i, t);
+      else if (t === MUD) updMud(x, y, i);
+      else if (t === WATER || t === OIL) updLiquid(x, y, i, t);
+      else if (t === FIRE) updFire(x, y, i);
+      else if (t === SMOKE) updGas(x, y, i);
+    }
+  }
+  frame++;
+}
+</script>
+
+<script>
+// ===================== UI, PAINTING, RENDERING =====================
+const view = document.getElementById("view"), stage = document.getElementById("stage");
+const ctx = view.getContext("2d");
+const buf = document.createElement("canvas"), bctx = buf.getContext("2d");
+let img, px;
+
+const TOOLS = [
+  { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
+  { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: EMPTY, label: "Erase" },
+];
+let tool = SAND, paused = false;
+const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
+const toolsEl = document.getElementById("tools");
+for (const tl of TOOLS) {
+  const b = document.createElement("button");
+  b.className = "tool"; b.id = "tool-" + tl.label.toLowerCase(); b.dataset.t = tl.t;
+  const sw = tl.t === EMPTY ? "background:transparent;border:1px dashed #8a8f8c" : "background:" + rgb(PROPS[tl.t].color);
+  b.innerHTML = `<i style="${sw}"></i>${tl.label}<kbd>${tl.key}</kbd>`;
+  b.onclick = () => selectTool(tl.t);
+  toolsEl.appendChild(b);
+}
+function selectTool(t) { tool = t; for (const b of toolsEl.children) b.setAttribute("aria-pressed", String(+b.dataset.t === t)); }
+selectTool(SAND);
+
+const sizeEl = document.getElementById("size"), sizeOut = document.getElementById("sizeOut");
+sizeEl.oninput = () => sizeOut.textContent = sizeEl.value;
+
+function fit() {
+  const r = stage.getBoundingClientRect();
+  const cell = r.width < 700 ? 3 : 4;
+  const w = Math.max(40, Math.floor(r.width / cell)), h = Math.max(30, Math.floor(r.height / cell));
+  if (w === W && h === H) return;
+  allocGrid(w, h);
+  buf.width = W; buf.height = H; img = bctx.createImageData(W, H); px = new Uint32Array(img.data.buffer);
+}
+new ResizeObserver(fit).observe(stage); fit();
+
+// ---- painting
+const PAINT_FILL = { [EARTH]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
+function paintAt(cx, cy) {
+  const r = +sizeEl.value, fill = PAINT_FILL[tool];
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (dx * dx + dy * dy > r * r) continue;
+    const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const i = y * W + x, cur = type[i];
+    if (tool === EMPTY) { type[i] = EMPTY; life[i] = 0; continue; }
+    if (cur === tool) continue; // already this element: leave it alone
+    if (tool === FIRE && cur === OIL) { type[i] = FIRE; life[i] = rint(...PROPS[FIRE].oilLife); continue; }
+    // The brush wins: anything already here is replaced outright.
+    // Empty space is sprinkled at the tool's fill rate so poured elements look granular.
+    if (cur !== EMPTY || rnd() < fill) setCell(i, tool);
+  }
+}
+let down = false, last = null, ptr = null, hover = null;
+const probe = document.getElementById("probe");
+// Label the pixel under the cursor; refreshed every frame since pixels move under a still cursor.
+function updateProbe() {
+  if (!hover) { probe.hidden = true; return; }
+  const [cx, cy] = hover.cell;
+  if (cx < 0 || cy < 0 || cx >= W || cy >= H) { probe.hidden = true; return; }
+  const name = PROPS[type[cy * W + cx]].name.toLowerCase();
+  if (probe.textContent !== name) probe.textContent = name;
+  probe.hidden = false;
+  const sw = stage.clientWidth, pw = probe.offsetWidth;
+  const left = hover.x + 14 + pw > sw ? hover.x - 10 - pw : hover.x + 14;
+  const top = Math.max(0, hover.y - 22);
+  probe.style.transform = `translate(${left}px, ${top}px)`;
+}
+function toCell(e) { const r = view.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / r.width * W), Math.floor((e.clientY - r.top) / r.height * H)]; }
+function strokeTo(p) {
+  if (!last) { paintAt(p[0], p[1]); last = p; return; }
+  const dx = p[0] - last[0], dy = p[1] - last[1], n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / Math.max(1, sizeEl.value / 2)));
+  for (let s = 1; s <= n; s++) paintAt(Math.round(last[0] + dx * s / n), Math.round(last[1] + dy * s / n));
+  last = p;
+}
+view.addEventListener("pointerdown", e => { const sr = stage.getBoundingClientRect(); hover = { cell: toCell(e), x: e.clientX - sr.left, y: e.clientY - sr.top }; down = true; view.setPointerCapture(e.pointerId); ptr = toCell(e); last = null; strokeTo(ptr); hideHint(); });
+view.addEventListener("pointermove", e => {
+  const r = stage.getBoundingClientRect();
+  hover = { cell: toCell(e), x: e.clientX - r.left, y: e.clientY - r.top };
+  if (!down) return; ptr = hover.cell; strokeTo(ptr);
+});
+view.addEventListener("pointerleave", () => { if (!down) hover = null; });
+const end = e => { down = false; last = null; if (e.pointerType !== "mouse") hover = null; };
+view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
+view.addEventListener("contextmenu", e => e.preventDefault());
+
+let hintShown = true;
+function hideHint() { if (hintShown) { document.getElementById("hint").style.opacity = 0; hintShown = false; } }
+
+// ---- rendering (ABGR little-endian)
+const pack = (r, g, b) => (255 << 24 | b << 16 | g << 8 | r) >>> 0;
+const FIRE_COLS = [pack(255, 236, 140), pack(255, 190, 60), pack(255, 128, 24), pack(226, 70, 18), pack(170, 34, 10)];
+function render() {
+  for (let i = 0; i < N; i++) {
+    const t = type[i];
+    if (t === EMPTY) { px[i] = 0xff000000; continue; }
+    const s = shade[i] / 255 - 0.5;
+    if (t === FIRE) { const k = life[i] < 8 ? 3 + (rnd() < .5) : (rnd() * 4) | 0; px[i] = FIRE_COLS[k]; continue; }
+    if (t === SMOKE) { const a = Math.min(1, life[i] / 90), g = (40 + 90 * a + s * 20) | 0; px[i] = pack(g, g, g + 4); continue; }
+    let [r, g, b] = PROPS[t].color;
+    if (t === EARTH) { const wear = 1 - life[i] / PROPS[EARTH].hp; r -= (r - 80) * wear * .5; g -= (g - 56) * wear * .5; b -= (b - 36) * wear * .5; r += s * 26; g += s * 20; b += s * 14; }
+    else if (t === MUD) { const e = PROPS[EARTH].color, dry = 1 - Math.max(0, life[i]) / PROPS[MUD].wet; r += (e[0] - r) * dry; g += (e[1] - g) * dry; b += (e[2] - b) * dry; r += s * 14; g += s * 10; b += s * 8; }
+    else if (t === SAND) { r += s * 30; g += s * 26; b += s * 20; }
+    else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh; }
+    else if (t === OIL) { r += s * 16; g += s * 10; b += s * 4; }
+    px[i] = pack(Math.max(0, Math.min(255, r | 0)), Math.max(0, Math.min(255, g | 0)), Math.max(0, Math.min(255, b | 0)));
+  }
+  bctx.putImageData(img, 0, 0);
+  const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
+  if (view.width !== cw || view.height !== ch) { view.width = cw; view.height = ch; }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buf, 0, 0, cw, ch);
+}
+function loop() {
+  if (down && ptr) paintAt(ptr[0], ptr[1]); // holding still keeps pouring
+  if (!paused) step();
+  render();
+  updateProbe();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- controls
+const pauseBtn = document.getElementById("pause");
+function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; }
+pauseBtn.onclick = togglePause;
+function clearAll() { type.fill(0); life.fill(0); }
+document.getElementById("clear").onclick = clearAll;
+const rulesEl = document.getElementById("rules");
+const toggleRules = () => { rulesEl.hidden = !rulesEl.hidden; };
+document.getElementById("showRules").onclick = toggleRules;
+document.getElementById("closeRules").onclick = toggleRules;
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const tl = TOOLS.find(x => x.key === e.key); if (tl) selectTool(tl.t);
+  else if (e.key === " ") { e.preventDefault(); togglePause(); }
+  else if (e.key === "c" || e.key === "C") clearAll();
+  else if (e.key === "r" || e.key === "R") toggleRules();
+  else if (e.key === "Escape") rulesEl.hidden = true;
+});
+
+// ---- rules sheet, generated from PROPS so it never drifts from the code
+const fmtD = d => d === Infinity ? "fixed" : d === 0 ? "n/a" : String(d);
+document.getElementById("propTable").innerHTML =
+  "<thead><tr><th>Element</th><th>State</th><th>Density</th><th>Movement</th><th>Notes</th></tr></thead><tbody>" +
+  PROPS.filter(p => p.id !== EMPTY).map(p =>
+    `<tr><td><span class="sw" style="background:${rgb(p.color)}"></span>${p.name}</td><td>${p.state}</td><td class="num">${fmtD(p.density)}</td><td>${p.moves}</td><td>${p.notes}</td></tr>`).join("") +
+  "</tbody>";
+document.getElementById("rxList").innerHTML = INTERACTIONS.map(s => `<li>${s}</li>`).join("");
+
+// ---- starter scene so the first view shows what it does
+(function seed() {
+  const g = (x, y) => y * W + x;
+  const fy = H - 1;
+  for (let x = Math.floor(W * .15); x < Math.floor(W * .85); x++) for (let y = fy - 2; y <= fy; y++) setCell(g(x, y), EARTH);
+  const L = Math.floor(W * .15), R = Math.floor(W * .85) - 1, top = Math.floor(H * .55);
+  for (let y = top; y <= fy; y++) for (let k = 0; k < 3; k++) { setCell(g(L + k, y), EARTH); setCell(g(R - k, y), EARTH); }
+  const span = R - L - 6, base = L + 3, depth = fy - 3;
+  const lay = (t, h0, h1) => { for (let y = depth - h1; y <= depth - h0; y++) for (let x = base; x < base + span; x++) setCell(g(x, y), t); };
+  lay(SAND, 0, Math.floor(H * .06)); lay(WATER, Math.floor(H * .06) + 1, Math.floor(H * .16)); lay(OIL, Math.floor(H * .16) + 1, Math.floor(H * .2));
+})();
+</script>
+
+</body>
+</html>
