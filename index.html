@@ -107,7 +107,7 @@ ul.rx li::marker { color: var(--ember); }
 
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
-const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7;
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -127,6 +127,8 @@ const PROPS = [
     moves: "Rises, billows diagonally, drifts sideways when blocked.", notes: "Lighter than air. Bubbles up through liquids. Fades and despawns after 60–140 ticks." },
   { id: MUD,   name: "Mud",   state: "powder", density: 16,  movable: true,  color: [72, 50, 32], wet: 600, wick: 60,
     moves: "Falls and piles like sand (same density), sinks through water and oil.", notes: "Made when water erodes earth. Once settled and dry for 600 ticks (~10 s) it hardens back into earth. Water contact, or wet mud next to it, keeps it moist." },
+  { id: STEAM, name: "Steam", state: "gas",    density: 0.5, movable: true,  color: [196, 212, 228], condense: [240, 480],
+    moves: "Rises, billows and drifts like smoke, and pools against ceilings.", notes: "Made when water puts out fire. Never fades away. After 240–480 ticks (4–8 s) it condenses back into water and falls." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -134,18 +136,18 @@ const RULES = {
   ignite: 0.09,          // chance per tick that fire ignites each touching oil cell
   fireToSmoke: 0.7,      // chance a burnt-out fire leaves smoke (else just vanishes)
   fireSmokePuff: 0.05,   // chance per tick a fire puffs smoke into empty space above it
-  quenchSteam: 0.2,      // chance the water that douses a fire is used up (turns to smoke/steam)
   erosion: 0.35,         // chance a moving water cell scrapes 1 integrity off an adjacent earth cell
 };
 
 const INTERACTIONS = [
-  "Density order, bottom to top: Earth (fixed) → Sand 16 = Mud 16 → Water 10 → Oil 8 → Air 1 → Smoke 0.4.",
+  "Density order, bottom to top: Earth (fixed) → Sand 16 = Mud 16 → Water 10 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
   "Sand dropped on water or oil sinks through it, but drag makes it fall more slowly than through air.",
   "Water poured onto oil sinks under it; oil poured into water rises to the top.",
   "Fire touching oil ignites it (9% per tick per oil cell), so fire races across an oil slick and burns down through it.",
-  "Fire touching water goes out instantly and turns to smoke. 20% of the time the dousing water is used up as steam.",
+  "Water touching fire wipes it out: the fire cell is destroyed and the water cell that did it flashes into steam.",
+  "Steam rises like smoke but never fades. After 4–8 seconds it condenses back into water and rains down, so water is never lost.",
   "Every burnt-out fire leaves smoke 70% of the time; burning cells also puff smoke upward as they burn.",
-  "Smoke rises through air and bubbles up through water and oil, then fades away.",
+  "Smoke and steam rise through air and bubble up through water and oil. Smoke fades away; steam doesn't.",
   "Moving water scrapes integrity off earth it brushes past (35% chance per moving cell per tick). Still pools don't erode. Worn-out earth washes loose as mud.",
   "Mud falls and settles like sand. Sand and mud share a density, so neither sinks through the other.",
   "Mud stays wet while it touches water. Wetness also seeps through connected mud, weakening with each cell, so a thick mud bank stays soft near the waterline.",
@@ -176,6 +178,7 @@ function setCell(i, t) {
   else if (t === FIRE) life[i] = rint(...PROPS[FIRE].life);
   else if (t === SMOKE) life[i] = rint(...PROPS[SMOKE].life);
   else if (t === MUD) life[i] = PROPS[MUD].wet;
+  else if (t === STEAM) life[i] = rint(...PROPS[STEAM].condense);
   else life[i] = 0;
 }
 function move(i, j) {
@@ -254,9 +257,9 @@ function updFire(x, y, i) {
   for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
     for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
       const j = ny * W + nx, tt = type[j];
-      if (tt === WATER) { // doused
-        setCell(i, SMOKE); moved[i] = 1;
-        if (rnd() < RULES.quenchSteam) { setCell(j, SMOKE); moved[j] = 1; }
+      if (tt === WATER) { // doused: fire is wiped out, the water flashes to steam
+        setCell(i, EMPTY); moved[i] = 1;
+        setCell(j, STEAM); moved[j] = 1;
         return;
       }
       if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
@@ -264,10 +267,18 @@ function updFire(x, y, i) {
   if (y > 0 && type[i - W] === EMPTY && rnd() < RULES.fireSmokePuff) { setCell(i - W, SMOKE); life[i - W] = rint(20, 50); moved[i - W] = 1; }
   if (life[i] <= 0) { if (rnd() < RULES.fireToSmoke) setCell(i, SMOKE); else setCell(i, EMPTY); moved[i] = 1; }
 }
-function updGas(x, y, i) {
+function updGas(x, y, i) { // smoke: fades out
   if (--life[i] <= 0) { type[i] = EMPTY; life[i] = 0; return; }
-  if (rnd() < 0.15) return; // lazy billow
   if (y === 0) { life[i] -= 3; return; }
+  riseMove(x, y, i);
+}
+function updSteam(x, y, i) { // steam: never fades, condenses back to water on a timer
+  if (--life[i] <= 0) { setCell(i, WATER); moved[i] = 1; return; }
+  if (y === 0) return;
+  riseMove(x, y, i);
+}
+function riseMove(x, y, i) {
+  if (rnd() < 0.15) return; // lazy billow
   const u = i - W, d = rnd() < 0.5 ? -1 : 1;
   if (rnd() < 0.7 && riseInto(u)) { move(i, u); return; }
   for (let s = d, n = 0; n < 2; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && riseInto(u + s)) { move(i, u + s); return; } }
@@ -287,6 +298,7 @@ function step() {
       else if (t === WATER || t === OIL) updLiquid(x, y, i, t);
       else if (t === FIRE) updFire(x, y, i);
       else if (t === SMOKE) updGas(x, y, i);
+      else if (t === STEAM) updSteam(x, y, i);
     }
   }
   frame++;
@@ -392,6 +404,7 @@ function render() {
     if (t === EMPTY) { px[i] = 0xff000000; continue; }
     const s = shade[i] / 255 - 0.5;
     if (t === FIRE) { const k = life[i] < 8 ? 3 + (rnd() < .5) : (rnd() * 4) | 0; px[i] = FIRE_COLS[k]; continue; }
+    if (t === STEAM) { const k = Math.min(1, life[i] / 120), w = (150 + 70 * k + s * 24) | 0; px[i] = pack(w - 18, w - 6, Math.min(255, w + 14)); continue; }
     if (t === SMOKE) { const a = Math.min(1, life[i] / 90), g = (40 + 90 * a + s * 20) | 0; px[i] = pack(g, g, g + 4); continue; }
     let [r, g, b] = PROPS[t].color;
     if (t === EARTH) { const wear = 1 - life[i] / PROPS[EARTH].hp; r -= (r - 80) * wear * .5; g -= (g - 56) * wear * .5; b -= (b - 36) * wear * .5; r += s * 26; g += s * 20; b += s * 14; }
