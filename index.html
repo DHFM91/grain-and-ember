@@ -107,7 +107,7 @@ ul.rx li::marker { color: var(--ember); }
 
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
-const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8;
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -129,6 +129,10 @@ const PROPS = [
     moves: "Falls and piles like sand (same density), sinks through water and oil.", notes: "Made when water erodes earth. Once settled and dry for 600 ticks (~10 s) it hardens back into earth. Water contact, or wet mud next to it, keeps it moist." },
   { id: STEAM, name: "Steam", state: "gas",    density: 0.5, movable: true,  color: [196, 212, 228], condense: [240, 480],
     moves: "Rises, billows and drifts like smoke, and pools against ceilings.", notes: "Made when water puts out fire. Never fades away. After 240–480 ticks (4–8 s) it condenses back into water and falls." },
+  { id: WAX,   name: "Wax",   state: "solid",  density: Infinity, movable: false, color: [236, 226, 198],
+    moves: "Never moves. Paints as a solid line.", notes: "Fire touching it melts it into molten wax (3% per tick per wax cell), and each cell it melts feeds that fire 15 more ticks of burning." },
+  { id: LWAX,  name: "Molten wax", state: "liquid", density: 9, movable: true, color: [232, 184, 96], disp: 1, drag: 0.6, cool: [90, 180],
+    moves: "Falls and spreads slowly (1 cell per tick, thick). Floats on water, sinks under oil.", notes: "Fuel: next to fire it throws off new flames and slowly burns away. Away from fire it hardens back into solid wax after 90–180 ticks (1.5–3 s). Touching water freezes it solid instantly." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -137,10 +141,22 @@ const RULES = {
   fireToSmoke: 0.7,      // chance a burnt-out fire leaves smoke (else just vanishes)
   fireSmokePuff: 0.05,   // chance per tick a fire puffs smoke into empty space above it
   erosion: 0.35,         // chance a moving water cell scrapes 1 integrity off an adjacent earth cell
+  waxMelt: 0.03,         // chance per tick that fire melts each touching solid wax cell
+  waxFeed: 15,           // extra burn ticks a fire gains for each wax cell it melts
+  fireMax: 200,          // cap on how long fed fire can keep burning
+  waxSpawn: 0.08,        // chance per tick that hot molten wax throws a new flame into an empty neighbour
+  waxFlame: [25, 50],    // burn time of a flame thrown off by molten wax
+  waxIgnite: 0.006,      // chance per tick that hot molten wax burns itself up (becomes fire)
+  waxBurn: [40, 80],     // burn time of a cell of burning molten wax
 };
 
 const INTERACTIONS = [
-  "Density order, bottom to top: Earth (fixed) → Sand 16 = Mud 16 → Water 10 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
+  "Density order, bottom to top: Earth, Wax (fixed) → Sand 16 = Mud 16 → Water 10 → Molten wax 9 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
+  "Fire touching solid wax melts it into molten wax (3% per tick per wax cell) and burns longer for every cell it melts.",
+  "Molten wax next to fire is fuel: it keeps throwing new flames into the empty space around it, mostly upward (8% per tick), and slowly burns itself up (0.6% per tick). A lit wax block grows a bigger and bigger fire until the wax is gone.",
+  "Molten wax that drips away from the fire cools and hardens again, so stray drips can survive the blaze.",
+  "Molten wax drips and slowly spreads, then hardens back into solid wax once it has been away from fire for 1.5–3 seconds. Hardened wax stays put wherever it set.",
+  "Molten wax that touches water freezes solid instantly. Poured onto water under an oil slick, it sets as a crust between the two layers.",
   "Sand dropped on water or oil sinks through it, but drag makes it fall more slowly than through air.",
   "Water poured onto oil sinks under it; oil poured into water rises to the top.",
   "Fire touching oil ignites it (9% per tick per oil cell), so fire races across an oil slick and burns down through it.",
@@ -152,6 +168,7 @@ const INTERACTIONS = [
   "Mud falls and settles like sand. Sand and mud share a density, so neither sinks through the other.",
   "Mud stays wet while it touches water. Wetness also seeps through connected mud, weakening with each cell, so a thick mud bank stays soft near the waterline.",
   "Settled mud with no water nearby dries over about 10 seconds, darkening to earth color, then hardens back into fixed earth with full integrity.",
+  "The bottom of the screen is a drain: sand, mud, water, oil and molten wax that fall off it are deleted. Paint earth or wax along the bottom to block it.",
   "Earth, mud, sand and water don't burn. Fire painted onto them just burns out.",
 ];
 
@@ -179,6 +196,7 @@ function setCell(i, t) {
   else if (t === SMOKE) life[i] = rint(...PROPS[SMOKE].life);
   else if (t === MUD) life[i] = PROPS[MUD].wet;
   else if (t === STEAM) life[i] = rint(...PROPS[STEAM].condense);
+  else if (t === LWAX) life[i] = rint(...PROPS[LWAX].cool);
   else life[i] = 0;
 }
 function move(i, j) {
@@ -199,8 +217,10 @@ function fallInto(m, j) {
 // Can a gas rise into cell j? (air and liquids only, never lifts powders)
 function riseInto(j) { const tt = type[j]; return tt === EMPTY || PROPS[tt].state === "liquid"; }
 
+// Drain: the bottom edge is open. Anything that falls off it is deleted.
+function drain(i) { type[i] = EMPTY; life[i] = 0; moved[i] = 1; }
 function updPowder(x, y, i, t) { // returns true if it moved
-  if (y + 1 >= H) return false;
+  if (y + 1 >= H) { drain(i); return true; }
   const b = i + W;
   if (fallInto(t, b)) { move(i, b); return true; }
   const d = rnd() < 0.5 ? -1 : 1;
@@ -224,7 +244,8 @@ function updMud(x, y, i) {
 }
 function updLiquid(x, y, i, t) {
   const P = PROPS[t]; let to = -1;
-  if (y + 1 < H) {
+  if (y + 1 >= H) { drain(i); return; }
+  {
     const b = i + W;
     if (fallInto(t, b)) to = b;
     else { const d = rnd() < 0.5 ? -1 : 1;
@@ -252,6 +273,25 @@ function erodeAround(j) {
   const n = ny * W + nx;
   if (type[n] === EARTH && --life[n] <= 0) { type[n] = MUD; life[n] = PROPS[MUD].wet; moved[n] = 1; }
 }
+// Molten wax: water freezes it on contact. Next to fire it is fuel: it throws off new flames
+// (mostly upward) and slowly burns itself up. Away from fire it cools on a timer and hardens.
+function updLWax(x, y, i) {
+  let hot = false, empties = 0, emptyUp = -1, emptyAny = -1;
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if (tt === WATER && (dx === 0 || dy === 0)) { setCell(i, WAX); moved[i] = 1; return; }
+      if (tt === FIRE) hot = true;
+      else if (tt === EMPTY) { empties++; if (rnd() * empties < 1) emptyAny = j; if (dy === -1 && (emptyUp < 0 || rnd() < 0.5)) emptyUp = j; }
+    } }
+  if (hot) {
+    life[i] = PROPS[LWAX].cool[1];
+    if (rnd() < RULES.waxSpawn) { const j = emptyUp >= 0 && rnd() < 0.75 ? emptyUp : emptyAny;
+      if (j >= 0) { type[j] = FIRE; life[j] = rint(...RULES.waxFlame); shade[j] = (rnd() * 255) | 0; moved[j] = 1; } }
+    if (rnd() < RULES.waxIgnite) { type[i] = FIRE; life[i] = rint(...RULES.waxBurn); moved[i] = 1; return; }
+  } else if (--life[i] <= 0) { setCell(i, WAX); moved[i] = 1; return; }
+  updLiquid(x, y, i, LWAX);
+}
 function updFire(x, y, i) {
   life[i]--;
   for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
@@ -263,6 +303,8 @@ function updFire(x, y, i) {
         return;
       }
       if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
+      else if (tt === WAX && rnd() < RULES.waxMelt) { setCell(j, LWAX); moved[j] = 1; life[i] = Math.min(RULES.fireMax, life[i] + RULES.waxFeed); }
+      else if (tt === LWAX) life[j] = PROPS[LWAX].cool[1]; // fire keeps molten wax hot
     } }
   if (y > 0 && type[i - W] === EMPTY && rnd() < RULES.fireSmokePuff) { setCell(i - W, SMOKE); life[i - W] = rint(20, 50); moved[i - W] = 1; }
   if (life[i] <= 0) { if (rnd() < RULES.fireToSmoke) setCell(i, SMOKE); else setCell(i, EMPTY); moved[i] = 1; }
@@ -292,13 +334,14 @@ function step() {
       const x = ltr ? k : W - 1 - k, i = y * W + x;
       if (moved[i]) continue;
       const t = type[i];
-      if (t === EMPTY || t === EARTH) continue;
+      if (t === EMPTY || t === EARTH || t === WAX) continue;
       if (t === SAND) updPowder(x, y, i, t);
       else if (t === MUD) updMud(x, y, i);
       else if (t === WATER || t === OIL) updLiquid(x, y, i, t);
       else if (t === FIRE) updFire(x, y, i);
       else if (t === SMOKE) updGas(x, y, i);
       else if (t === STEAM) updSteam(x, y, i);
+      else if (t === LWAX) updLWax(x, y, i);
     }
   }
   frame++;
@@ -314,7 +357,8 @@ let img, px;
 
 const TOOLS = [
   { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
-  { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: EMPTY, label: "Erase" },
+  { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: WAX, label: "Wax" },
+  { key: "7", t: EMPTY, label: "Erase" },
 ];
 let tool = SAND, paused = false;
 const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -344,7 +388,7 @@ function fit() {
 new ResizeObserver(fit).observe(stage); fit();
 
 // ---- painting
-const PAINT_FILL = { [EARTH]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
+const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool];
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
@@ -412,6 +456,8 @@ function render() {
     else if (t === SAND) { r += s * 30; g += s * 26; b += s * 20; }
     else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh; }
     else if (t === OIL) { r += s * 16; g += s * 10; b += s * 4; }
+    else if (t === WAX) { r += s * 10; g += s * 10; b += s * 12; }
+    else if (t === LWAX) { const heat = Math.min(1, life[i] / PROPS[LWAX].cool[1]); r += 16 * heat + s * 8; g += -24 * heat + s * 8; b += -40 * heat; }
     px[i] = pack(Math.max(0, Math.min(255, r | 0)), Math.max(0, Math.min(255, g | 0)), Math.max(0, Math.min(255, b | 0)));
   }
   bctx.putImageData(img, 0, 0);
