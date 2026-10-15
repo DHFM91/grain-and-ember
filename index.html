@@ -52,6 +52,13 @@ body {
 .brush { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
 .brush input { width: 110px; accent-color: var(--ember); }
 .brush output { color: var(--ink); min-width: 2ch; font-variant-numeric: tabular-nums; }
+.speed { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.speed-opts { display: inline-flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.speed-opts button { font: 500 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--dim); background: transparent; border: 0; border-left: 1px solid var(--line); padding: 6px 8px; cursor: pointer; }
+.speed-opts button:first-child { border-left: 0; }
+.speed-opts button:hover { color: var(--ink); }
+.speed-opts button[aria-pressed="true"] { color: var(--ink); background: #1a1d1e; box-shadow: inset 0 -2px 0 var(--ember); }
+.speed-opts button:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
 .actions { display: flex; gap: 6px; margin-left: auto; }
 .btn { font: 500 12px var(--mono); color: var(--dim); background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 7px 10px; cursor: pointer; }
 .btn:hover, .tool:hover { color: var(--ink); border-color: #3a3f41; }
@@ -98,6 +105,7 @@ ul.rx li::marker { color: var(--ember); }
 <div class="bar" role="toolbar" aria-label="Paint tools">
   <div class="tools" id="tools"></div>
   <label class="brush" for="size">Brush <input id="size" type="range" min="1" max="14" value="5"><output id="sizeOut">5</output></label>
+  <div class="speed" role="group" aria-label="Simulation speed">Speed <div class="speed-opts" id="speedOpts"></div></div>
   <div class="actions">
     <button class="btn" id="pause">Pause</button>
     <button class="btn" id="clear">Clear</button>
@@ -107,7 +115,7 @@ ul.rx li::marker { color: var(--ember); }
 
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
-const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10;
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -133,6 +141,8 @@ const PROPS = [
     moves: "Never moves. Paints as a solid line.", notes: "Fire touching it melts it into molten wax (3% per tick per wax cell), and each cell it melts feeds that fire 15 more ticks of burning." },
   { id: LWAX,  name: "Molten wax", state: "liquid", density: 9, movable: true, color: [232, 184, 96], disp: 1, drag: 0.6, cool: [90, 180],
     moves: "Falls and spreads slowly (1 cell per tick, thick). Floats on water, sinks under oil.", notes: "Fuel: next to fire it throws off new flames and slowly burns away. Away from fire it hardens back into solid wax after 90–180 ticks (1.5–3 s). Touching water freezes it solid instantly." },
+  { id: ICE,   name: "Ice",   state: "solid",  density: Infinity, movable: false, color: [178, 222, 242], melt: [1500, 2700],
+    moves: "Never moves. Paints as a solid line.", notes: "Slowly melts into water after 25–45 s. Water that stays touching it for 2 s freezes into new ice, so ice spreads through pools. Fire melts it instantly." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -148,10 +158,12 @@ const RULES = {
   waxFlame: [25, 50],    // burn time of a flame thrown off by molten wax
   waxIgnite: 0.006,      // chance per tick that hot molten wax burns itself up (becomes fire)
   waxBurn: [40, 80],     // burn time of a cell of burning molten wax
+  freezeTicks: 120,      // ticks of ice contact (~2 s) before a water cell freezes
+  meltCool: 600,         // fresh meltwater must touch ice this much longer (~10 s) before it can refreeze
 };
 
 const INTERACTIONS = [
-  "Density order, bottom to top: Earth, Wax (fixed) → Sand 16 = Mud 16 → Water 10 → Molten wax 9 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
+  "Density order, bottom to top: Earth, Wax, Ice (fixed) → Sand 16 = Mud 16 → Water 10 → Molten wax 9 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
   "Fire touching solid wax melts it into molten wax (3% per tick per wax cell) and burns longer for every cell it melts.",
   "Molten wax next to fire is fuel: it keeps throwing new flames into the empty space around it, mostly upward (8% per tick), and slowly burns itself up (0.6% per tick). A lit wax block grows a bigger and bigger fire until the wax is gone.",
   "Molten wax that drips away from the fire cools and hardens again, so stray drips can survive the blaze.",
@@ -170,6 +182,10 @@ const INTERACTIONS = [
   "Settled mud with no water nearby dries over about 10 seconds, darkening to earth color, then hardens back into fixed earth with full integrity.",
   "The bottom of the screen is a drain: sand, mud, water, oil and molten wax that fall off it are deleted. Paint earth or wax along the bottom to block it.",
   "Earth, mud, sand and water don't burn. Fire painted onto them just burns out.",
+  "Ice slowly melts into water on its own (each cell lasts 25–45 seconds).",
+  "Water that stays in contact with ice for about 2 seconds freezes into new ice, and the clock keeps counting while it stays in contact. Water turns frosty as it gets close. Flowing water that only brushes past doesn't freeze; still pools against ice do, so ice creeps outward through any water it can reach.",
+  "Meltwater from ice is warm: it needs about 10 more seconds of contact before it can refreeze. That lets an ice block on dry ground shrink, while ice sitting in a pool grows.",
+  "Fire touching ice melts it to water instantly, and that water then puts the fire out as steam.",
 ];
 
 let W = 0, H = 0, N = 0;
@@ -197,6 +213,7 @@ function setCell(i, t) {
   else if (t === MUD) life[i] = PROPS[MUD].wet;
   else if (t === STEAM) life[i] = rint(...PROPS[STEAM].condense);
   else if (t === LWAX) life[i] = rint(...PROPS[LWAX].cool);
+  else if (t === ICE) life[i] = rint(...PROPS[ICE].melt);
   else life[i] = 0;
 }
 function move(i, j) {
@@ -292,6 +309,22 @@ function updLWax(x, y, i) {
   } else if (--life[i] <= 0) { setCell(i, WAX); moved[i] = 1; return; }
   updLiquid(x, y, i, LWAX);
 }
+// Ice: melts on a slow timer. Its meltwater starts "warm" (negative chill) so it can't instantly refreeze.
+function updIce(x, y, i) {
+  if (--life[i] <= 0) { setCell(i, WATER); life[i] = -RULES.meltCool; moved[i] = 1; }
+}
+// Water: for water, life is a chill counter. Each tick touching ice adds 1; at freezeTicks it becomes ice.
+// Away from ice, built-up chill fades again (but meltwater's warm deficit stays until it touches ice).
+function updWater(x, y, i) {
+  let cold = false;
+  if (x > 0 && type[i - 1] === ICE) cold = true;
+  else if (x < W - 1 && type[i + 1] === ICE) cold = true;
+  else if (y > 0 && type[i - W] === ICE) cold = true;
+  else if (y < H - 1 && type[i + W] === ICE) cold = true;
+  if (cold) { if (++life[i] >= RULES.freezeTicks) { setCell(i, ICE); moved[i] = 1; return; } }
+  else if (life[i] > 0) life[i] -= 2;
+  updLiquid(x, y, i, WATER);
+}
 function updFire(x, y, i) {
   life[i]--;
   for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
@@ -303,6 +336,7 @@ function updFire(x, y, i) {
         return;
       }
       if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
+      else if (tt === ICE) { setCell(j, WATER); moved[j] = 1; }
       else if (tt === WAX && rnd() < RULES.waxMelt) { setCell(j, LWAX); moved[j] = 1; life[i] = Math.min(RULES.fireMax, life[i] + RULES.waxFeed); }
       else if (tt === LWAX) life[j] = PROPS[LWAX].cool[1]; // fire keeps molten wax hot
     } }
@@ -337,7 +371,9 @@ function step() {
       if (t === EMPTY || t === EARTH || t === WAX) continue;
       if (t === SAND) updPowder(x, y, i, t);
       else if (t === MUD) updMud(x, y, i);
-      else if (t === WATER || t === OIL) updLiquid(x, y, i, t);
+      else if (t === WATER) updWater(x, y, i);
+      else if (t === OIL) updLiquid(x, y, i, t);
+      else if (t === ICE) updIce(x, y, i);
       else if (t === FIRE) updFire(x, y, i);
       else if (t === SMOKE) updGas(x, y, i);
       else if (t === STEAM) updSteam(x, y, i);
@@ -358,7 +394,7 @@ let img, px;
 const TOOLS = [
   { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
   { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: WAX, label: "Wax" },
-  { key: "7", t: EMPTY, label: "Erase" },
+  { key: "7", t: ICE, label: "Ice" }, { key: "8", t: EMPTY, label: "Erase" },
 ];
 let tool = SAND, paused = false;
 const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -388,7 +424,7 @@ function fit() {
 new ResizeObserver(fit).observe(stage); fit();
 
 // ---- painting
-const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
+const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool];
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
@@ -454,7 +490,9 @@ function render() {
     if (t === EARTH) { const wear = 1 - life[i] / PROPS[EARTH].hp; r -= (r - 80) * wear * .5; g -= (g - 56) * wear * .5; b -= (b - 36) * wear * .5; r += s * 26; g += s * 20; b += s * 14; }
     else if (t === MUD) { const e = PROPS[EARTH].color, dry = 1 - Math.max(0, life[i]) / PROPS[MUD].wet; r += (e[0] - r) * dry; g += (e[1] - g) * dry; b += (e[2] - b) * dry; r += s * 14; g += s * 10; b += s * 8; }
     else if (t === SAND) { r += s * 30; g += s * 26; b += s * 20; }
-    else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh; }
+    else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh;
+      if (life[i] > 0) { const f = Math.min(1, life[i] / RULES.freezeTicks) * 0.7, c = PROPS[ICE].color; r += (c[0] - r) * f; g += (c[1] - g) * f; b += (c[2] - b) * f; } }
+    else if (t === ICE) { const thaw = 1 - Math.min(1, life[i] / 600); r += s * 14 - 60 * thaw; g += s * 10 - 40 * thaw; b += s * 6 - 6 * thaw; }
     else if (t === OIL) { r += s * 16; g += s * 10; b += s * 4; }
     else if (t === WAX) { r += s * 10; g += s * 10; b += s * 12; }
     else if (t === LWAX) { const heat = Math.min(1, life[i] / PROPS[LWAX].cool[1]); r += 16 * heat + s * 8; g += -24 * heat + s * 8; b += -40 * heat; }
@@ -467,9 +505,22 @@ function render() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(buf, 0, 0, cw, ch);
 }
+// Simulation speed: steps per frame accumulate fractionally, so 0.5x steps every other frame
+// and 1.5x alternates one and two steps.
+const SPEEDS = [0.5, 1, 1.5, 2, 3, 6];
+let speed = 1, stepAcc = 0;
+const speedOpts = document.getElementById("speedOpts");
+for (const sp of SPEEDS) {
+  const b = document.createElement("button");
+  b.type = "button"; b.id = "speed-" + String(sp).replace(".", "_"); b.dataset.s = sp; b.textContent = sp + "x";
+  b.onclick = () => setSpeed(sp);
+  speedOpts.appendChild(b);
+}
+function setSpeed(sp) { speed = sp; stepAcc = 0; for (const b of speedOpts.children) b.setAttribute("aria-pressed", String(+b.dataset.s === sp)); }
+setSpeed(1);
 function loop() {
   if (down && ptr) paintAt(ptr[0], ptr[1]); // holding still keeps pouring
-  if (!paused) step();
+  if (!paused) { stepAcc += speed; while (stepAcc >= 1) { step(); stepAcc -= 1; } }
   render();
   updateProbe();
   requestAnimationFrame(loop);
@@ -493,6 +544,7 @@ addEventListener("keydown", e => {
   else if (e.key === "c" || e.key === "C") clearAll();
   else if (e.key === "r" || e.key === "R") toggleRules();
   else if (e.key === "Escape") rulesEl.hidden = true;
+  else if (e.key === "[" || e.key === "]") { const k = SPEEDS.indexOf(speed) + (e.key === "]" ? 1 : -1); if (k >= 0 && k < SPEEDS.length) setSpeed(SPEEDS[k]); }
 });
 
 // ---- rules sheet, generated from PROPS so it never drifts from the code
