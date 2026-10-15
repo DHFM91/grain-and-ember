@@ -21,7 +21,7 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 | Steam | 0.5 | Rises, never fades, condenses back into water and rains down. |
 | Smoke | 0.4 | Rises, fades, despawns. |
 
-The game opens on a **welcome scene**: six small trays, each set up for one thing to try (a sand timer, a jumbled mix that sorts itself by density while a slow drip keeps adding sand and water, an oil slick, each of those two with a lit wax fuse that reaches the oil after about 30 seconds, an ice seed in a pond, a burning wax candle, and a water reservoir pouring down the central tube of an earth volcano, scouring it into a canyon). The **Welcome** button (or **W**) rebuilds it any time.
+The game opens on a **welcome scene**: six small trays, each set up for one thing to try (a sand timer, a jumbled mix that sorts itself by density while a slow drip keeps adding sand and water, an oil slick, each of those two with a lit wax fuse that reaches the oil after about 30 seconds, an ice seed in a pond, a burning wax candle, and a water reservoir pouring down the central tube of an earth volcano, scouring it into a canyon). They all stand inside one big, thin steel sink: whatever spills or washes out runs along its floor to a single drain in the middle and down a pipe off the screen. Sand or mud that reaches the drain piles up in the pipe and clogs it, and then the sink starts to fill. The **Welcome** button (or **W**) rebuilds it any time.
 
 The bottom of the screen is a drain: anything that falls off it is gone. Paint earth or wax along the bottom to hold things in.
 
