@@ -620,19 +620,25 @@ function vHourglass(x0, y0, x1, y1) {
   }
   tray(cx - half - 2, neck + 2, cx + half + 2, y1);
 }
-// A lit wax fuse: two runs on earth shelves joined by a drop at the far end. The flame starts at the
-// left end of the top run (a), burns right, drops down the corner, burns back left along the lower run
-// and drips off its open left end. Fire crosses about one wax cell per 17 ticks, so 54-cell runs
-// take roughly 30 s end to end (tested: 26-35 s, no fizzles). Occupies rows r-1 .. r+4.
-const FUSE_MAX = 54;
-function fuse(a, r, L) {
+// A lit wax fuse: two runs joined by a drop at the far end. The flame starts at the left end of the
+// top run (a), burns right, drops down the corner and burns back left along the lower run. Fire
+// crosses about one wax cell per 17 ticks, so 54-cell runs take roughly 30 s end to end.
+// The lower run lies directly on the oil (its shelf is the oil's top row, which this replaces with earth)
+// except under its last BARE cells: when the flame reaches them, the melting wax sinks into the oil,
+// the oil rises into the gap and catches. Fire only ever travels sideways or up a short corner, which
+// is the reliable direction; drops and staircases toward the oil kept stalling. Occupies rows r-1..r+4,
+// where row r+4 is the oil surface.
+const FUSE_MAX = 54, FUSE_BARE = 6;
+function fuse(a, r, L, wallTop = r) {
   const b = a + L - 1;
-  fillRect(WAX, a, r, b, r); fillRect(EARTH, a - 1, r + 1, b, r + 1);       // top run on its shelf
-  fillRect(EARTH, a - 2, r, a - 2, r + 1);                                   // lip behind the lit end
-  put(b + 1, r + 1, WAX); put(b + 1, r + 2, WAX); put(b + 1, r + 3, EARTH);  // corner drop
-  fillRect(EARTH, b + 2, r, b + 2, r + 4);                                   // corner wall
-  fillRect(WAX, a, r + 3, b, r + 3); fillRect(EARTH, a, r + 4, b + 1, r + 4); // lower run; left end open
-  put(a - 1, r, FIRE); put(a - 1, r - 1, FIRE);                              // the match
+  fillRect(WAX, a, r, b, r); fillRect(EARTH, a - 1, r + 1, b, r + 1);         // top run on its shelf
+  fillRect(EARTH, a - 2, r, a - 2, r + 1);                                     // lip behind the lit end
+  put(b + 1, r + 1, WAX); put(b + 1, r + 2, WAX); put(b + 1, r + 3, EARTH);    // corner drop
+  fillRect(EARTH, b + 2, wallTop, b + 2, r + 4);                               // corner wall (tall, so oil rising beyond it can't spill onto the fuse)
+  fillRect(EARTH, a - 2, r + 2, a - 1, r + 4);                                 // seal under the lit end: rising oil can't reach the match
+  fillRect(WAX, a, r + 3, b, r + 3);                                           // lower run
+  fillRect(EARTH, a + FUSE_BARE, r + 4, b + 1, r + 4);                         // its shelf, stopping short of the end
+  put(a - 1, r, FIRE); put(a - 1, r - 1, FIRE);                                // the match
 }
 function vDensity(x0, y0, x1, y1) {
   tray(x0, y0, x1, y1);
@@ -645,15 +651,17 @@ function vDensity(x0, y0, x1, y1) {
   fillRect(EARTH, ex - 1, y0 + 1, ex + 1, y0 + 1); put(ex - 1, y0 + 2, EARTH); put(ex + 1, y0 + 2, EARTH);
   emitters.push({ i: (y0 + 2) * W + ex, rate: 0.05, types: [SAND, WATER], n: 0 });
   // fuse to the left of the drip, its lower run dripping onto the mix
-  const a = x0 + 4, L = Math.min(FUSE_MAX, (ex - 5) - a + 1), r = top - 8;
-  if (L > 8 && r - 1 > y0 + 3) fuse(a, r, L);
+  const a = x0 + 4, L = Math.min(FUSE_MAX, (ex - 5) - a + 1), r = top - 4;
+  // the drip raises the liquid level over time; the fuse's shelf works as a lid, so the rise all happens
+  // beside the fuse. The tall corner wall keeps it from spilling onto the fuse before the flame arrives.
+  if (L > 8 && r - 1 > y0 + 3) fuse(a, r, L, Math.max(y0 + 4, r - 10));
 }
 function vOilSlick(x0, y0, x1, y1) {
   tray(x0, y0, x1, y1);
   const inner = y1 - 2, h = inner - y0, wTop = inner - Math.round(h * 0.45), oTop = wTop - Math.round(h * 0.2);
   fillRect(WATER, x0 + 2, wTop, x1 - 2, inner);
   fillRect(OIL, x0 + 2, oTop, x1 - 2, wTop - 1);
-  const a = x0 + 4, L = Math.min(FUSE_MAX, (x1 - 4) - a + 1 - 2), r = oTop - 8;
+  const a = x0 + 4, L = Math.min(FUSE_MAX, (x1 - 4) - a + 1 - 2), r = oTop - 4;
   if (L > 8 && r - 1 > y0) fuse(a, r, L);
 }
 function vIcePond(x0, y0, x1, y1) {
