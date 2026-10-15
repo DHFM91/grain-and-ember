@@ -591,6 +591,11 @@ document.getElementById("rxList").innerHTML = INTERACTIONS.map(s => `<li>${s}</l
 // ---- welcome scene: a grid of small dioramas, each primed for one interaction.
 // Some run on their own (sand timer, sorting, candle, erosion, freezing) so the first frame moves;
 // the oil slick waits for the player. Each sits in its own tray so they never interfere.
+// The whole grid stands inside one big, thin steel sink. Whatever spills or washes out of the trays
+// lands in it and runs to a single drain in the middle of the floor, which carries it down a pipe and
+// off the bottom of the screen. Liquids flow along the floor to it; grains (sand, mud) settle where they
+// land, so mounds build up under the trays. The pipe has a flat run where any grains that do reach the
+// drain pile up: pour sand in, or let a mound or a breached tray spill onto it, and it clogs.
 const VIGNETTES = [
   { label: "Sand timer", short: "Sand timer", build: vHourglass },
   { label: "Watch it sort (fuse lit)", short: "Sorting", build: vDensity },
@@ -700,12 +705,36 @@ function vErosion(x0, y0, x1, y1) {
   fillRect(EMPTY, cx - 3, bend, cx + 1, bend + 1);
   fillRect(EMPTY, cx - 3, bend, cx - 2, y1);
 }
+const SINK_ROOM = 23;  // rows under the trays: some clearance, the sink floor, its drain funnel and the pipe
+function vlabelAt(text, x, y) {
+  const el = document.createElement("div");
+  el.className = "vlabel"; el.textContent = text;
+  el.style.left = (x / W * 100) + "%"; el.style.top = (y / H * 100) + "%";
+  labelsEl.appendChild(el);
+}
+function buildSink(top) {
+  const fd = 5, yr = H - 7, yb = yr - 4, yfl = yb - fd;
+  const dc = (W >> 1) - 1;                              // drain: cells dc, dc + 1
+  // floor: flat, dipping into a small 45-degree funnel at the drain; 2 cells thick so nothing slips through the steps
+  const floorY = x => yfl + Math.max(0, fd - (x <= dc ? dc - x : x - (dc + 1)));
+  for (let x = 1; x <= W - 2; x++) { const y = floorY(x); fillRect(STEEL, x, y, x, y + 1); }
+  fillRect(STEEL, 1, top, 1, yfl); fillRect(STEEL, W - 2, top, W - 2, yfl);   // thin side walls, full height
+  // pipe: straight down, a flat run (where grains settle and can clog it), then down off the screen
+  const ex = dc + 14 < W - 3 ? dc + 12 : dc - 12, lo = Math.min(dc, ex), hi = Math.max(dc, ex);
+  fillRect(STEEL, lo - 1, yr - 1, hi + 2, yr + 3);
+  fillRect(STEEL, dc - 1, yb, dc - 1, yr - 1); fillRect(STEEL, dc + 2, yb, dc + 2, yr - 1);
+  fillRect(STEEL, ex - 1, yr + 3, ex - 1, H - 1); fillRect(STEEL, ex + 2, yr + 3, ex + 2, H - 1);
+  fillRect(EMPTY, lo, yr, hi + 1, yr + 2);            // the run
+  fillRect(EMPTY, dc, yb, dc + 1, yr - 1);            // drain hole and inlet
+  fillRect(EMPTY, ex, yr + 3, ex + 1, H - 1);         // outlet
+  vlabelAt("Drain", ex > dc ? ex + 5 : lo - 8, yr - 1);
+}
 
 function buildWelcome() {
   type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = [];
   const cellPx = stage.clientWidth / W, labelRows = Math.ceil(20 / cellPx);
   const band = Math.max(6, Math.round(52 / cellPx));            // keep clear of the title hint
-  const areaH = H - band, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
+  const areaH = H - band - SINK_ROOM, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
   const sw = W / cols, sh = areaH / rows;
   VIGNETTES.forEach((v, n) => {
     const c = n % cols, r = (n / cols) | 0;
@@ -719,6 +748,7 @@ function buildWelcome() {
     el.style.maxWidth = ((x1 - x0) / W * 100) + "%";
     labelsEl.appendChild(el);
   });
+  buildSink(band);
   welcomeGrid = W + "x" + H; welcomePristine = true; labelsEl.classList.remove("dim");
 }
 buildWelcome();
