@@ -162,6 +162,8 @@ const RULES = {
   ignite: 0.09,          // chance per tick that fire ignites each touching oil cell
   fireToSmoke: 0.7,      // chance a burnt-out fire leaves smoke (else just vanishes)
   fireSmokePuff: 0.05,   // chance per tick a fire puffs smoke into empty space above it
+  fallJitter: 0.12,      // chance a free-falling grain or drop hangs back a tick (breaks up lockstep sheets)
+  slideJitter: 0.3,      // chance a grain about to slide down a slope waits a tick instead
   erosion: 0.35,         // chance a moving water cell scrapes 1 integrity off an adjacent earth cell
   waxMelt: 0.03,         // chance per tick that fire melts each touching solid wax cell
   waxFeed: 15,           // extra burn ticks a fire gains for each wax cell it melts
@@ -278,10 +280,10 @@ function drain(i) { type[i] = EMPTY; life[i] = 0; moved[i] = 1; }
 function updPowder(x, y, i, t) { // returns true if it moved
   if (y + 1 >= H) { drain(i); return true; }
   const b = i + W;
-  if (fallInto(t, b)) { move(i, b); return true; }
+  if (fallInto(t, b)) { if (type[b] === EMPTY && rnd() < RULES.fallJitter) return true; move(i, b); return true; }
   const d = rnd() < 0.5 ? -1 : 1;
   for (let s = d, n = 0; n < 2; n++, s = -s) { const nx = x + s; if (nx < 0 || nx >= W) continue;
-    if (fallInto(t, b + s)) { move(i, b + s); return true; } }
+    if (fallInto(t, b + s)) { if (rnd() < RULES.slideJitter) return true; move(i, b + s); return true; } }
   return false;
 }
 // Mud: falls like sand. While settled, life = moisture. Water refills it, wet neighbours wick into it,
@@ -303,7 +305,7 @@ function updLiquid(x, y, i, t) {
   if (y + 1 >= H) { drain(i); return; }
   {
     const b = i + W;
-    if (fallInto(t, b)) to = b;
+    if (fallInto(t, b)) { if (type[b] === EMPTY && rnd() < RULES.fallJitter) return; to = b; }
     else { const d = rnd() < 0.5 ? -1 : 1;
       for (let s = d, n = 0; n < 2 && to < 0; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && fallInto(t, b + s)) to = b + s; } }
   }
@@ -516,7 +518,7 @@ function updShards() {
 function step() {
   moved.fill(0);
   for (let y = H - 1; y >= 0; y--) {
-    const ltr = ((y + frame) & 1) === 0;
+    const ltr = rnd() < 0.5;
     for (let k = 0; k < W; k++) {
       const x = ltr ? k : W - 1 - k, i = y * W + x;
       if (moved[i]) continue;
