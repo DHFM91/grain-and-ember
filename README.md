@@ -13,7 +13,7 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 | Steel | fixed | Completely inert and indestructible, even to acid and explosions. Only the brush can remove it. |
 | Ice | fixed | Slowly melts to water. Freezes water that stays touching it for ~2 s, so it spreads through pools. Fire melts it instantly. |
 | Sand | 16 | Falls and piles. Sinks through water and oil. |
-| Gunpowder | 16 | Piles like sand. Fire, a blast or shrapnel sets it off: connected gunpowder explodes together, destroying everything but steel within a radius that grows with the charge, and throwing shrapnel that cuts through anything but steel (and bounces off steel). Nearby charges go up in a chain. |
+| Gunpowder | 16 | Piles like sand. Fire, a blast or shrapnel lights it, and a pile goes off like a string of firecrackers: small pops on short random fuses, each setting off the next. A blast destroys everything but steel at its core, throws loose pixels (sand, liquids, live and lit gunpowder) clear, and sprays shrapnel that cuts through anything but steel and bounces off steel. |
 | Mud | 16 | Eroded earth. Falls like sand, dries back into earth when away from water. |
 | Acid | 11 | Dissolves anything it touches except steel, one for one: every pixel it eats uses up a pixel of acid. Never eats other acid. |
 | Water | 10 | Falls and levels out. Turns to steam when it puts out fire. Erodes earth while flowing. |
