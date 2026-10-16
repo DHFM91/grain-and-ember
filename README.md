@@ -10,9 +10,10 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 |---|---|---|
 | Earth | fixed | Stays where painted. Flowing water erodes it into mud. |
 | Wax | fixed | Stays where painted. A flame touching wax burns steadily like a wick, so a wax line works as a fuse. Fire melts it into burning drips. |
-| Steel | fixed | Completely inert and indestructible, even to acid. Only the brush can remove it. |
+| Steel | fixed | Completely inert and indestructible, even to acid and explosions. Only the brush can remove it. |
 | Ice | fixed | Slowly melts to water. Freezes water that stays touching it for ~2 s, so it spreads through pools. Fire melts it instantly. |
 | Sand | 16 | Falls and piles. Sinks through water and oil. |
+| Gunpowder | 16 | Piles like sand. Fire, a blast or shrapnel sets it off: connected gunpowder explodes together, destroying everything but steel within a radius that grows with the charge, and throwing shrapnel that cuts through anything but steel (and bounces off steel). Nearby charges go up in a chain. |
 | Mud | 16 | Eroded earth. Falls like sand, dries back into earth when away from water. |
 | Acid | 11 | Dissolves anything it touches except steel, one for one: every pixel it eats uses up a pixel of acid. Never eats other acid. |
 | Water | 10 | Falls and levels out. Turns to steam when it puts out fire. Erodes earth while flowing. |
@@ -30,7 +31,7 @@ Open **Rules** in the game for the full interaction list.
 
 ## Controls
 
-- **1–9, 0**: Earth, Sand, Water, Oil, Fire, Wax, Ice, Steel, Acid, Erase
+- **1–9, G, 0**: Earth, Sand, Water, Oil, Fire, Wax, Ice, Steel, Acid, Gunpowder, Erase
 - **Drag**: paint (the brush replaces whatever is underneath)
 - **Space**: pause · **C**: clear · **W**: welcome scene · **R**: rules
 - **Speed**: 0.5x, 1x, 1.5x, 2x, 3x or 6x from the toolbar, or **[** and **]** to step down and up
