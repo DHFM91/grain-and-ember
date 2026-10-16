@@ -121,7 +121,7 @@ ul.rx li::marker { color: var(--ember); }
 
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
-const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11, STEEL = 12, ACID = 13;
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11, STEEL = 12, ACID = 13, GUN = 14;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -153,6 +153,8 @@ const PROPS = [
     moves: "Never moves. Paints as a solid line.", notes: "Completely inert: nothing burns, erodes, melts, freezes or dissolves it. Only the brush (including Erase) can remove it." },
   { id: ACID,  name: "Acid",  state: "liquid", density: 11,  movable: true,  color: [126, 232, 58], disp: 4, drag: 0.5,
     moves: "Falls, then flows sideways up to 4 cells per tick. Slightly heavier than water.", notes: "Dissolves anything it touches except steel and other acid, one for one: each pixel it eats uses up one pixel of acid." },
+  { id: GUN,   name: "Gunpowder", state: "powder", density: 16, movable: true, color: [96, 92, 100],
+    moves: "Falls and piles like sand.", notes: "Explodes when fire, a blast or shrapnel touches it. Connected gunpowder goes up together, and the more grains in one explosion, the bigger the blast and the more (and farther-flying) shrapnel." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -169,6 +171,20 @@ const RULES = {
   waxIgnite: 0.006,      // chance per tick that hot molten wax burns itself up (becomes fire)
   waxBurn: [40, 80],     // burn time of a cell of burning molten wax
   waxAfterglow: 60,      // ticks molten wax keeps throwing flames after it leaves a flame
+  hostReach: 10,         // gunpowder connected to a detonating grain within this many cells goes up with it
+  blastBase: 2.5,        // blast radius = blastBase + blastPer * sqrt(grains in the explosion)
+  blastPer: 1.4,
+  blastMax: 40,
+  blastFlame: [5, 16],   // burn time of the fireball left inside the blast
+  shardBase: 2,          // shrapnel pieces = shardBase + shardPer * grains (capped)
+  shardPer: 0.15,
+  shardMax: 48,
+  shardReach: 10,        // cells a piece can fly = shardReach + shardReachPer * sqrt(grains), less what it cuts
+  shardReachPer: 5,
+  shardCut: 2,           // extra range a piece loses for every pixel it cuts through
+  shardBounce: 0.6,      // share of its range a piece keeps when it bounces off steel
+  shardSpeed: [2.5, 4],  // cells per tick
+  shardGravity: 0.04,
   acidBite: 0.2,         // chance per tick that an acid cell dissolves one touching pixel (and itself with it)
   freezeTicks: 120,      // ticks of ice contact (~2 s) before a water cell freezes
   meltCool: 600,         // fresh meltwater must touch ice this much longer (~10 s) before it can refreeze
@@ -201,6 +217,10 @@ const INTERACTIONS = [
   "Fire touching ice melts it to water instantly, and that water then puts the fire out as steam.",
   "Acid dissolves anything it touches except steel (20% chance per tick per acid pixel): earth, sand, water, oil, wax, ice, fire, smoke, all of it. It is used up one for one, so each pixel it eats also destroys one pixel of acid. Acid never eats other acid, so a pool of it stays put until it meets something.",
   "Steel is the only thing that can hold acid.",
+  "Fire touching gunpowder sets it off. All gunpowder connected to that grain (within 10 cells) explodes together as one blast.",
+  "The blast destroys everything within its radius except steel, leaving a fireball and smoke. Steel also shields whatever is behind it. The radius grows with the number of grains that went up: about 4 cells for one grain, 17 for a hundred.",
+  "Every explosion throws shrapnel: more pieces, flying farther, the more grains went up. Shrapnel cuts straight through anything but steel, losing range for each pixel it cuts, and bounces off steel until it is spent.",
+  "Gunpowder caught by a blast or hit by shrapnel explodes on the next tick, so separate charges and long trails go up in a chain.",
 ];
 
 let W = 0, H = 0, N = 0;
@@ -214,6 +234,7 @@ function allocGrid(w, h) {
   const oldW = W, oldH = H, oT = type, oL = life, oS = shade;
   W = w; H = h; N = w * h;
   type = new Uint8Array(N); life = new Int16Array(N); shade = new Uint8Array(N); moved = new Uint8Array(N);
+  stampA = new Int32Array(N); stampN = 0; pending = []; shards = [];
   if (oT) { // keep overlapping content, anchored to the bottom
     const dy = h - oldH;
     for (let y = 0; y < oldH; y++) { const ny = y + dy; if (ny < 0 || ny >= h) continue;
@@ -358,6 +379,7 @@ function updFire(x, y, i) {
       }
       if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
       else if (tt === ICE) { setCell(j, WATER); moved[j] = 1; }
+      else if (tt === GUN) arm(j);
       else if (tt === WAX) { onWax = true; if (rnd() < RULES.waxMelt) { setCell(j, LWAX); moved[j] = 1; life[i] = Math.min(RULES.fireMax, life[i] + RULES.waxFeed); } }
       else if (tt === LWAX) life[j] = PROPS[LWAX].cool[1]; // fire keeps molten wax hot
     } }
@@ -398,6 +420,99 @@ function updAcid(x, y, i) {
   }
   updLiquid(x, y, i, ACID);
 }
+// ---- Gunpowder. Fire, a blast or a shrapnel hit "arms" a grain (queued in `pending`); at the end of
+// the tick each armed grain sets off a host explosion: all gunpowder connected to it within
+// RULES.hostReach cells goes up together. Its grain count n sizes everything:
+//   blast radius  R = blastBase + blastPer * sqrt(n)   (capped at blastMax)
+//   shrapnel      shardBase + shardPer * n fragments (capped at shardMax), each able to fly
+//                 shardReach + shardReachPer * sqrt(n) cells before it is spent
+// The blast is cast as rays from the centre, so steel stops it and shields whatever is behind.
+// Gunpowder the blast or shrapnel reaches is armed for the next tick: chains ripple outward.
+let pending = [];          // armed gunpowder cell indices, detonated at the end of the tick
+let shards = [];           // { x, y, vx, vy, left, cx, cy, trail: [i, i] }
+let stampA, stampN = 0;    // visit stamps for the flood fill and the blast (sized in allocGrid)
+function arm(j) { pending.push(j); }
+function processBlasts() {
+  if (pending.length) { const now = pending; pending = []; for (const i of now) detonate(i); }
+  if (shards.length) updShards();
+}
+function detonate(seed) {
+  if (type[seed] !== GUN) return;            // already went up with an earlier host, or moved away
+  const sx = seed % W, sy = (seed / W) | 0, reach2 = RULES.hostReach * RULES.hostReach;
+  const tag = ++stampN, stack = [seed], cells = [];
+  stampA[seed] = tag; let mx = 0, my = 0;
+  while (stack.length) {
+    const i = stack.pop(), x = i % W, y = (i / W) | 0;
+    cells.push(i); mx += x; my += y;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const j = ny * W + nx;
+      if (stampA[j] !== tag && type[j] === GUN && (nx - sx) ** 2 + (ny - sy) ** 2 <= reach2) { stampA[j] = tag; stack.push(j); }
+    }
+  }
+  const n = cells.length; for (const i of cells) { type[i] = EMPTY; life[i] = 0; }
+  const cx = mx / n, cy = my / n;
+  const R = Math.min(RULES.blastMax, RULES.blastBase + RULES.blastPer * Math.sqrt(n));
+  // the blast: rays out from the centre; each stops at steel
+  const btag = ++stampN, rays = Math.ceil(2 * Math.PI * R * 1.5) + 8;
+  for (let a = 0; a < rays; a++) {
+    const ang = a / rays * 2 * Math.PI, ux = Math.cos(ang), uy = Math.sin(ang);
+    for (let t = 0; t <= R; t += 0.5) {
+      const x = Math.round(cx + ux * t), y = Math.round(cy + uy * t);
+      if (x < 0 || y < 0 || x >= W || y >= H) break;
+      const j = y * W + x;
+      if (type[j] === STEEL) break;
+      if (stampA[j] === btag) continue;
+      stampA[j] = btag;
+      if (type[j] === GUN) { arm(j); continue; }   // neighbouring charges go up next tick
+      const d = t / R, r = rnd();
+      if (r < 0.5 * (1 - d)) { type[j] = FIRE; life[j] = rint(...RULES.blastFlame); }
+      else if (r < 0.5 * (1 - d) + 0.12) { type[j] = SMOKE; life[j] = rint(30, 80); }
+      else { type[j] = EMPTY; life[j] = 0; }
+      shade[j] = (rnd() * 255) | 0; moved[j] = 1;
+    }
+  }
+  // shrapnel
+  const count = Math.min(RULES.shardMax, Math.round(RULES.shardBase + RULES.shardPer * n));
+  const reach = RULES.shardReach + RULES.shardReachPer * Math.sqrt(n);
+  for (let k = 0; k < count; k++) {
+    const ang = rnd() * 2 * Math.PI, sp = RULES.shardSpeed[0] + rnd() * (RULES.shardSpeed[1] - RULES.shardSpeed[0]);
+    shards.push({ x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, left: reach * (0.6 + rnd() * 0.4),
+                  cx: Math.round(cx), cy: Math.round(cy), trail: [] });
+  }
+}
+// Shrapnel flies in straight lines (with a little gravity), one cell at a time so it never skips
+// anything. It cuts out every pixel it enters except steel, which bounces it. Every cell flown costs
+// 1 from its range, every pixel cut costs shardCut more, every bounce costs a share of what's left.
+function updShards() {
+  const keep = [];
+  for (const s of shards) {
+    s.vy += RULES.shardGravity;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(s.vx), Math.abs(s.vy))));
+    let alive = true;
+    for (let k = 0; k < steps && alive; k++) {
+      const fx = s.x + s.vx / steps, fy = s.y + s.vy / steps, ix = Math.round(fx), iy = Math.round(fy);
+      if (ix === s.cx && iy === s.cy) { s.x = fx; s.y = fy; continue; }
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) { alive = false; break; }
+      const j = iy * W + ix, tt = type[j];
+      if (tt === STEEL) {
+        const hx = ix !== s.cx && type[s.cy * W + ix] === STEEL, hy = iy !== s.cy && type[iy * W + s.cx] === STEEL;
+        if (hx || !hy) s.vx = -s.vx;
+        if (hy || !hx) s.vy = -s.vy;
+        s.left *= RULES.shardBounce;
+        break;
+      }
+      if (tt === GUN) arm(j);
+      else if (tt !== EMPTY) { type[j] = EMPTY; life[j] = 0; moved[j] = 1; s.left -= RULES.shardCut; }
+      s.x = fx; s.y = fy; s.cx = ix; s.cy = iy; s.left -= 1;
+      s.trail.unshift(j); if (s.trail.length > 3) s.trail.pop();
+      if (s.left <= 0) alive = false;
+    }
+    if (alive) keep.push(s);
+  }
+  shards = keep;
+}
 function step() {
   moved.fill(0);
   for (let y = H - 1; y >= 0; y--) {
@@ -417,9 +532,11 @@ function step() {
       else if (t === STEAM) updSteam(x, y, i);
       else if (t === LWAX) updLWax(x, y, i);
       else if (t === ACID) updAcid(x, y, i);
+      else if (t === GUN) updPowder(x, y, i, t);
     }
   }
   for (const e of emitters) if (e.i < N && type[e.i] === EMPTY && rnd() < e.rate) setCell(e.i, e.types[e.n++ % e.types.length]);
+  processBlasts();
   frame++;
 }
 </script>
@@ -435,7 +552,8 @@ const TOOLS = [
   { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
   { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: WAX, label: "Wax" },
   { key: "7", t: ICE, label: "Ice" }, { key: "8", t: STEEL, label: "Steel" },
-  { key: "9", t: ACID, label: "Acid" }, { key: "0", t: EMPTY, label: "Erase" },
+  { key: "9", t: ACID, label: "Acid" },
+  { key: "g", t: GUN, label: "Gunpowder" }, { key: "0", t: EMPTY, label: "Erase" },
 ];
 let tool = SAND, paused = false;
 const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -444,7 +562,7 @@ for (const tl of TOOLS) {
   const b = document.createElement("button");
   b.className = "tool"; b.id = "tool-" + tl.label.toLowerCase(); b.dataset.t = tl.t;
   const sw = tl.t === EMPTY ? "background:transparent;border:1px dashed #8a8f8c" : "background:" + rgb(PROPS[tl.t].color);
-  b.innerHTML = `<i style="${sw}"></i>${tl.label}<kbd>${tl.key}</kbd>`;
+  b.innerHTML = `<i style="${sw}"></i>${tl.label}<kbd>${tl.key.toUpperCase()}</kbd>`;
   b.onclick = () => selectTool(tl.t);
   toolsEl.appendChild(b);
 }
@@ -472,7 +590,7 @@ function fit() {
 new ResizeObserver(fit).observe(stage); fit();
 
 // ---- painting
-const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [STEEL]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [ACID]: 0.5, [EMPTY]: 1 };
+const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [STEEL]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [ACID]: 0.5, [GUN]: 0.45, [EMPTY]: 1 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool];
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
@@ -528,6 +646,7 @@ function hideHint() {
 
 // ---- rendering (ABGR little-endian)
 const pack = (r, g, b) => (255 << 24 | b << 16 | g << 8 | r) >>> 0;
+const SHARD_COLS = [pack(255, 250, 220), pack(255, 196, 90), pack(200, 96, 32)];
 const FIRE_COLS = [pack(255, 236, 140), pack(255, 190, 60), pack(255, 128, 24), pack(226, 70, 18), pack(170, 34, 10)];
 function render() {
   for (let i = 0; i < N; i++) {
@@ -541,6 +660,7 @@ function render() {
     if (t === EARTH) { const wear = 1 - life[i] / PROPS[EARTH].hp; r -= (r - 80) * wear * .5; g -= (g - 56) * wear * .5; b -= (b - 36) * wear * .5; r += s * 26; g += s * 20; b += s * 14; }
     else if (t === MUD) { const e = PROPS[EARTH].color, dry = 1 - Math.max(0, life[i]) / PROPS[MUD].wet; r += (e[0] - r) * dry; g += (e[1] - g) * dry; b += (e[2] - b) * dry; r += s * 14; g += s * 10; b += s * 8; }
     else if (t === SAND) { r += s * 30; g += s * 26; b += s * 20; }
+    else if (t === GUN) { const k = shade[i] > 210 ? 46 : shade[i] < 50 ? -34 : 0; r += k + s * 10; g += k + s * 10; b += k + s * 12; }
     else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh;
       if (life[i] > 0) { const f = Math.min(1, life[i] / RULES.freezeTicks) * 0.7, c = PROPS[ICE].color; r += (c[0] - r) * f; g += (c[1] - g) * f; b += (c[2] - b) * f; } }
     else if (t === ICE) { const thaw = 1 - Math.min(1, life[i] / 600); r += s * 14 - 60 * thaw; g += s * 10 - 40 * thaw; b += s * 6 - 6 * thaw; }
@@ -551,6 +671,8 @@ function render() {
     else if (t === LWAX) { const heat = Math.min(1, life[i] / PROPS[LWAX].cool[1]); r += 16 * heat + s * 8; g += -24 * heat + s * 8; b += -40 * heat; }
     px[i] = pack(Math.max(0, Math.min(255, r | 0)), Math.max(0, Math.min(255, g | 0)), Math.max(0, Math.min(255, b | 0)));
   }
+  // shrapnel: a hot head and a cooling two-cell trail, drawn over the grid
+  for (const s of shards) for (let k = s.trail.length - 1; k >= 0; k--) { const i = s.trail[k]; if (i < N) px[i] = SHARD_COLS[k]; }
   bctx.putImageData(img, 0, 0);
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
@@ -584,7 +706,7 @@ requestAnimationFrame(loop);
 const pauseBtn = document.getElementById("pause");
 function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; }
 pauseBtn.onclick = togglePause;
-function clearAll() { type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
+function clearAll() { pending = []; shards = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
 document.getElementById("clear").onclick = clearAll;
 document.getElementById("welcome").onclick = () => buildWelcome();
 const rulesEl = document.getElementById("rules");
@@ -593,7 +715,7 @@ document.getElementById("showRules").onclick = toggleRules;
 document.getElementById("closeRules").onclick = toggleRules;
 addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
-  const tl = TOOLS.find(x => x.key === e.key); if (tl) selectTool(tl.t);
+  const tl = TOOLS.find(x => x.key === e.key.toLowerCase()); if (tl) selectTool(tl.t);
   else if (e.key === " ") { e.preventDefault(); togglePause(); }
   else if (e.key === "c" || e.key === "C") clearAll();
   else if (e.key === "w" || e.key === "W") buildWelcome();
@@ -754,7 +876,7 @@ function buildSink(top) {
 }
 
 function buildWelcome() {
-  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = [];
+  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = [];
   const cellPx = stage.clientWidth / W, labelRows = Math.ceil(20 / cellPx);
   const band = Math.max(6, Math.round(52 / cellPx));            // keep clear of the title hint
   const areaH = H - band - SINK_ROOM, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
