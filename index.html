@@ -121,7 +121,7 @@ ul.rx li::marker { color: var(--ember); }
 
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
-const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11, STEEL = 12;
+const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11, STEEL = 12, ACID = 13;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -151,6 +151,8 @@ const PROPS = [
     moves: "Never moves. Paints as a solid line.", notes: "Slowly melts into water after 25–45 s. Water that stays touching it for 2 s freezes into new ice, so ice spreads through pools. Fire melts it instantly." },
   { id: STEEL, name: "Steel", state: "solid",  density: Infinity, movable: false, color: [134, 144, 156],
     moves: "Never moves. Paints as a solid line.", notes: "Completely inert: nothing burns, erodes, melts, freezes or dissolves it. Only the brush (including Erase) can remove it." },
+  { id: ACID,  name: "Acid",  state: "liquid", density: 11,  movable: true,  color: [126, 232, 58], disp: 4, drag: 0.5,
+    moves: "Falls, then flows sideways up to 4 cells per tick. Slightly heavier than water.", notes: "Dissolves anything it touches except steel and other acid, one for one: each pixel it eats uses up one pixel of acid." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -167,12 +169,13 @@ const RULES = {
   waxIgnite: 0.006,      // chance per tick that hot molten wax burns itself up (becomes fire)
   waxBurn: [40, 80],     // burn time of a cell of burning molten wax
   waxAfterglow: 60,      // ticks molten wax keeps throwing flames after it leaves a flame
+  acidBite: 0.2,         // chance per tick that an acid cell dissolves one touching pixel (and itself with it)
   freezeTicks: 120,      // ticks of ice contact (~2 s) before a water cell freezes
   meltCool: 600,         // fresh meltwater must touch ice this much longer (~10 s) before it can refreeze
 };
 
 const INTERACTIONS = [
-  "Density order, bottom to top: Earth, Wax, Ice, Steel (fixed) → Sand 16 = Mud 16 → Water 10 → Molten wax 9 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
+  "Density order, bottom to top: Earth, Wax, Ice, Steel (fixed) → Sand 16 = Mud 16 → Acid 11 → Water 10 → Molten wax 9 → Oil 8 → Air 1 → Steam 0.5 → Smoke 0.4.",
   "Fire touching solid wax melts it into molten wax (3% per tick per wax cell). A flame touching solid wax burns steadily, like a wick, so a line of wax is a reliable fuse: fire creeps along it at about one cell every 17 ticks.",
   "Freshly melted wax keeps throwing flames for about a second after it leaves the fire, so burning drips can carry a flame down and around corners.",
   "Molten wax next to fire is fuel: it keeps throwing new flames into the empty space around it, mostly upward (8% per tick), and slowly burns itself up (0.6% per tick). A lit wax block grows a bigger and bigger fire until the wax is gone.",
@@ -196,6 +199,8 @@ const INTERACTIONS = [
   "Water that stays in contact with ice for about 2 seconds freezes into new ice, and the clock keeps counting while it stays in contact. Water turns frosty as it gets close. Flowing water that only brushes past doesn't freeze; still pools against ice do, so ice creeps outward through any water it can reach.",
   "Meltwater from ice is warm: it needs about 10 more seconds of contact before it can refreeze. That lets an ice block on dry ground shrink, while ice sitting in a pool grows.",
   "Fire touching ice melts it to water instantly, and that water then puts the fire out as steam.",
+  "Acid dissolves anything it touches except steel (20% chance per tick per acid pixel): earth, sand, water, oil, wax, ice, fire, smoke, all of it. It is used up one for one, so each pixel it eats also destroys one pixel of acid. Acid never eats other acid, so a pool of it stays put until it meets something.",
+  "Steel is the only thing that can hold acid.",
 ];
 
 let W = 0, H = 0, N = 0;
@@ -377,6 +382,22 @@ function riseMove(x, y, i) {
   for (let s = d, n = 0; n < 2; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && riseInto(u + s)) { move(i, u + s); return; } }
   const nx = x + d; if (nx >= 0 && nx < W && type[i + d] === EMPTY) move(i, i + d);
 }
+// Acid: each tick, try one random neighbour (of the 4). Anything but empty, steel or acid gets eaten,
+// and the acid cell is spent doing it. Otherwise it flows like any liquid.
+function updAcid(x, y, i) {
+  if (rnd() < RULES.acidBite) {
+    const r = (rnd() * 4) | 0, nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
+    if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+      const j = ny * W + nx, tt = type[j];
+      if (tt !== EMPTY && tt !== STEEL && tt !== ACID) {
+        type[j] = EMPTY; life[j] = 0; moved[j] = 1;
+        type[i] = EMPTY; life[i] = 0; moved[i] = 1;
+        return;
+      }
+    }
+  }
+  updLiquid(x, y, i, ACID);
+}
 function step() {
   moved.fill(0);
   for (let y = H - 1; y >= 0; y--) {
@@ -395,6 +416,7 @@ function step() {
       else if (t === SMOKE) updGas(x, y, i);
       else if (t === STEAM) updSteam(x, y, i);
       else if (t === LWAX) updLWax(x, y, i);
+      else if (t === ACID) updAcid(x, y, i);
     }
   }
   for (const e of emitters) if (e.i < N && type[e.i] === EMPTY && rnd() < e.rate) setCell(e.i, e.types[e.n++ % e.types.length]);
@@ -413,7 +435,7 @@ const TOOLS = [
   { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
   { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: WAX, label: "Wax" },
   { key: "7", t: ICE, label: "Ice" }, { key: "8", t: STEEL, label: "Steel" },
-  { key: "9", t: EMPTY, label: "Erase" },
+  { key: "9", t: ACID, label: "Acid" }, { key: "0", t: EMPTY, label: "Erase" },
 ];
 let tool = SAND, paused = false;
 const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -450,7 +472,7 @@ function fit() {
 new ResizeObserver(fit).observe(stage); fit();
 
 // ---- painting
-const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [STEEL]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [EMPTY]: 1 };
+const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [STEEL]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [ACID]: 0.5, [EMPTY]: 1 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool];
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
@@ -523,6 +545,7 @@ function render() {
       if (life[i] > 0) { const f = Math.min(1, life[i] / RULES.freezeTicks) * 0.7, c = PROPS[ICE].color; r += (c[0] - r) * f; g += (c[1] - g) * f; b += (c[2] - b) * f; } }
     else if (t === ICE) { const thaw = 1 - Math.min(1, life[i] / 600); r += s * 14 - 60 * thaw; g += s * 10 - 40 * thaw; b += s * 6 - 6 * thaw; }
     else if (t === OIL) { r += s * 16; g += s * 10; b += s * 4; }
+    else if (t === ACID) { const sh = Math.sin(frame * 0.09 + shade[i]) * 14; r += sh * .4 + s * 10; g += sh + s * 10; b += s * 8; }
     else if (t === WAX) { r += s * 10; g += s * 10; b += s * 12; }
     else if (t === STEEL) { const row = ((i / W) | 0), st = Math.sin(row * 1.7) * 9 + Math.sin(row * 0.31) * 6; r += st + s * 8; g += st + s * 8; b += st + s * 9; }
     else if (t === LWAX) { const heat = Math.min(1, life[i] / PROPS[LWAX].cool[1]); r += 16 * heat + s * 8; g += -24 * heat + s * 8; b += -40 * heat; }
