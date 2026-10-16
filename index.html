@@ -154,7 +154,7 @@ const PROPS = [
   { id: ACID,  name: "Acid",  state: "liquid", density: 11,  movable: true,  color: [126, 232, 58], disp: 4, drag: 0.5,
     moves: "Falls, then flows sideways up to 4 cells per tick. Slightly heavier than water.", notes: "Dissolves anything it touches except steel and other acid, one for one: each pixel it eats uses up one pixel of acid." },
   { id: GUN,   name: "Gunpowder", state: "powder", density: 16, movable: true, color: [96, 92, 100],
-    moves: "Falls and piles like sand.", notes: "Explodes when fire, a blast or shrapnel touches it. Connected gunpowder goes up together, and the more grains in one explosion, the bigger the blast and the more (and farther-flying) shrapnel." },
+    moves: "Falls and piles like sand.", notes: "Lit by fire, blasts and shrapnel; goes off a few ticks later in small pops of the grains around it, so piles crackle like firecrackers. Blasts destroy the core, throw loose pixels (including live and lit gunpowder) clear, and spray shrapnel. More grains per pop, bigger blast." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -173,7 +173,8 @@ const RULES = {
   waxIgnite: 0.006,      // chance per tick that hot molten wax burns itself up (becomes fire)
   waxBurn: [40, 80],     // burn time of a cell of burning molten wax
   waxAfterglow: 60,      // ticks molten wax keeps throwing flames after it leaves a flame
-  hostReach: 10,         // gunpowder connected to a detonating grain within this many cells goes up with it
+  hostReach: 3,          // gunpowder connected to a detonating grain within this many cells goes up with it
+  fuseTicks: [1, 5],     // an armed grain goes off this many ticks later (random, so piles crackle)
   blastBase: 2.5,        // blast radius = blastBase + blastPer * sqrt(grains in the explosion)
   blastPer: 1.4,
   blastMax: 40,
@@ -187,6 +188,14 @@ const RULES = {
   shardBounce: 0.6,      // share of its range a piece keeps when it bounces off steel
   shardSpeed: [2.5, 4],  // cells per tick
   shardGravity: 0.04,
+  blastCore: 0.4,        // inside this share of the radius, everything but steel is destroyed
+  gunThrow: 0.75,        // gunpowder in the blast is thrown instead of armed with chance d * gunThrow (d = distance / R)
+  gunLit: 0.3,           // share of thrown gunpowder that is lit
+  litFuse: [6, 30],      // ticks a lit, thrown grain burns before it pops
+  throwSpeed: 2.4,       // cells per tick a blast throws loose pixels, grown by throwPer * sqrt(grains)
+  throwPer: 0.25,
+  throwLift: 1.1,        // extra upward kick on thrown pixels
+  throwGravity: 0.12,
   acidBite: 0.2,         // chance per tick that an acid cell dissolves one touching pixel (and itself with it)
   freezeTicks: 120,      // ticks of ice contact (~2 s) before a water cell freezes
   meltCool: 600,         // fresh meltwater must touch ice this much longer (~10 s) before it can refreeze
@@ -219,10 +228,11 @@ const INTERACTIONS = [
   "Fire touching ice melts it to water instantly, and that water then puts the fire out as steam.",
   "Acid dissolves anything it touches except steel (20% chance per tick per acid pixel): earth, sand, water, oil, wax, ice, fire, smoke, all of it. It is used up one for one, so each pixel it eats also destroys one pixel of acid. Acid never eats other acid, so a pool of it stays put until it meets something.",
   "Steel is the only thing that can hold acid.",
-  "Fire touching gunpowder sets it off. All gunpowder connected to that grain (within 10 cells) explodes together as one blast.",
-  "The blast destroys everything within its radius except steel, leaving a fireball and smoke. Steel also shields whatever is behind it. The radius grows with the number of grains that went up: about 4 cells for one grain, 17 for a hundred.",
+  "Fire touching gunpowder lights it, and it goes off a few ticks later. The gunpowder connected to that grain within 3 cells explodes with it as one small blast.",
+  "The blast's core destroys everything but steel, leaving a fireball and smoke. Further out it still destroys earth, wax and ice, but throws loose things (sand, mud, liquids, gunpowder) outward; they fly, land and settle. Steel stops the blast and shields whatever is behind it. The radius grows with the number of grains that went up.",
   "Every explosion throws shrapnel: more pieces, flying farther, the more grains went up. Shrapnel cuts straight through anything but steel, losing range for each pixel it cuts, and bounces off steel until it is spent.",
-  "Gunpowder caught by a blast or hit by shrapnel explodes on the next tick, so separate charges and long trails go up in a chain.",
+  "Gunpowder caught by a blast either catches (likeliest near the centre) and pops a few ticks later, or is thrown clear. Some thrown grains are lit and pop in mid-air or where they land; the rest survive. So a pile goes off like a string of firecrackers, scattering live powder.",
+  "Shrapnel that hits gunpowder sets it off too.",
 ];
 
 let W = 0, H = 0, N = 0;
@@ -236,7 +246,7 @@ function allocGrid(w, h) {
   const oldW = W, oldH = H, oT = type, oL = life, oS = shade;
   W = w; H = h; N = w * h;
   type = new Uint8Array(N); life = new Int16Array(N); shade = new Uint8Array(N); moved = new Uint8Array(N);
-  stampA = new Int32Array(N); stampN = 0; pending = []; shards = [];
+  stampA = new Int32Array(N); stampN = 0; pending = []; shards = []; debris = [];
   if (oT) { // keep overlapping content, anchored to the bottom
     const dy = h - oldH;
     for (let y = 0; y < oldH; y++) { const ny = y + dy; if (ny < 0 || ny >= h) continue;
@@ -422,24 +432,33 @@ function updAcid(x, y, i) {
   }
   updLiquid(x, y, i, ACID);
 }
-// ---- Gunpowder. Fire, a blast or a shrapnel hit "arms" a grain (queued in `pending`); at the end of
-// the tick each armed grain sets off a host explosion: all gunpowder connected to it within
-// RULES.hostReach cells goes up together. Its grain count n sizes everything:
+// ---- Gunpowder. Fire, a blast or a shrapnel hit "arms" a grain with a short random fuse (queued in
+// `pending` as cell + due tick). When the fuse runs out, the grain sets off a small host explosion: the
+// gunpowder connected to it within RULES.hostReach cells goes up together, and its grain count n sizes it:
 //   blast radius  R = blastBase + blastPer * sqrt(n)   (capped at blastMax)
 //   shrapnel      shardBase + shardPer * n fragments (capped at shardMax), each able to fly
 //                 shardReach + shardReachPer * sqrt(n) cells before it is spent
 // The blast is cast as rays from the centre, so steel stops it and shields whatever is behind.
-// Gunpowder the blast or shrapnel reaches is armed for the next tick: chains ripple outward.
-let pending = [];          // armed gunpowder cell indices, detonated at the end of the tick
+// Inside the core (blastCore of R) everything but steel is destroyed. Further out, fixed things (earth,
+// wax, ice) are still destroyed but loose things (sand, mud, liquids, gunpowder) are thrown outward as
+// debris that flies, lands and settles. Gunpowder in the blast is either armed (likelier near the centre)
+// or thrown; some thrown grains are lit and pop in mid-air or soon after landing. Hosts are small and the
+// fuses random, so a pile goes off like a string of firecrackers rather than in one bang.
+let pending = [];          // flat pairs: armed cell index, tick it goes off
 let shards = [];           // { x, y, vx, vy, left, cx, cy, trail: [i, i] }
+let debris = [];           // { x, y, vx, vy, cx, cy, t, l, sh, fuse }  (fuse: ticks left if lit, else -1)
 let stampA, stampN = 0;    // visit stamps for the flood fill and the blast (sized in allocGrid)
-function arm(j) { pending.push(j); }
+function arm(j, delay = rint(...RULES.fuseTicks)) { pending.push(j, frame + delay); }
 function processBlasts() {
-  if (pending.length) { const now = pending; pending = []; for (const i of now) detonate(i); }
+  if (pending.length) {
+    const now = pending; pending = [];
+    for (let k = 0; k < now.length; k += 2) { if (now[k + 1] <= frame) detonate(now[k]); else pending.push(now[k], now[k + 1]); }
+  }
+  if (debris.length) updDebris();
   if (shards.length) updShards();
 }
 function detonate(seed) {
-  if (type[seed] !== GUN) return;            // already went up with an earlier host, or moved away
+  if (type[seed] !== GUN) return;            // already went up with an earlier host, was thrown, or moved away
   const sx = seed % W, sy = (seed / W) | 0, reach2 = RULES.hostReach * RULES.hostReach;
   const tag = ++stampN, stack = [seed], cells = [];
   stampA[seed] = tag; let mx = 0, my = 0;
@@ -454,28 +473,39 @@ function detonate(seed) {
     }
   }
   const n = cells.length; for (const i of cells) { type[i] = EMPTY; life[i] = 0; }
-  const cx = mx / n, cy = my / n;
+  explode(mx / n, my / n, n);
+}
+function flash(j, d) {  // what a blasted cell becomes: fireball near the centre, some smoke, else air
+  const r = rnd();
+  if (r < 0.5 * (1 - d)) { type[j] = FIRE; life[j] = rint(...RULES.blastFlame); }
+  else if (r < 0.5 * (1 - d) + 0.12) { type[j] = SMOKE; life[j] = rint(30, 80); }
+  else { type[j] = EMPTY; life[j] = 0; }
+  shade[j] = (rnd() * 255) | 0; moved[j] = 1;
+}
+function explode(cx, cy, n) {
   const R = Math.min(RULES.blastMax, RULES.blastBase + RULES.blastPer * Math.sqrt(n));
-  // the blast: rays out from the centre; each stops at steel
   const btag = ++stampN, rays = Math.ceil(2 * Math.PI * R * 1.5) + 8;
+  const kick = RULES.throwSpeed * (1 + Math.sqrt(n) * RULES.throwPer);
   for (let a = 0; a < rays; a++) {
     const ang = a / rays * 2 * Math.PI, ux = Math.cos(ang), uy = Math.sin(ang);
     for (let t = 0; t <= R; t += 0.5) {
       const x = Math.round(cx + ux * t), y = Math.round(cy + uy * t);
       if (x < 0 || y < 0 || x >= W || y >= H) break;
-      const j = y * W + x;
-      if (type[j] === STEEL) break;
+      const j = y * W + x, tt = type[j];
+      if (tt === STEEL) break;
       if (stampA[j] === btag) continue;
       stampA[j] = btag;
-      if (type[j] === GUN) { arm(j); continue; }   // neighbouring charges go up next tick
-      const d = t / R, r = rnd();
-      if (r < 0.5 * (1 - d)) { type[j] = FIRE; life[j] = rint(...RULES.blastFlame); }
-      else if (r < 0.5 * (1 - d) + 0.12) { type[j] = SMOKE; life[j] = rint(30, 80); }
-      else { type[j] = EMPTY; life[j] = 0; }
-      shade[j] = (rnd() * 255) | 0; moved[j] = 1;
+      const d = t / R;
+      if (tt === GUN) {
+        if (rnd() < 1 - d * RULES.gunThrow) arm(j);                                  // goes up in the chain
+        else throwCell(j, ux, uy, d, kick, rnd() < RULES.gunLit ? rint(...RULES.litFuse) : -1);
+        continue;
+      }
+      const P = PROPS[tt];
+      if (d > RULES.blastCore && P.movable && (P.state === "powder" || P.state === "liquid")) { throwCell(j, ux, uy, d, kick, -1); continue; }
+      flash(j, d);
     }
   }
-  // shrapnel
   const count = Math.min(RULES.shardMax, Math.round(RULES.shardBase + RULES.shardPer * n));
   const reach = RULES.shardReach + RULES.shardReachPer * Math.sqrt(n);
   for (let k = 0; k < count; k++) {
@@ -483,6 +513,42 @@ function detonate(seed) {
     shards.push({ x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, left: reach * (0.6 + rnd() * 0.4),
                   cx: Math.round(cx), cy: Math.round(cy), trail: [] });
   }
+}
+// Lift a cell out of the grid and send it flying away from the blast centre (a bit upward-biased).
+function throwCell(j, ux, uy, d, kick, fuse) {
+  const sp = kick * (1.15 - d) * (0.6 + rnd() * 0.8), x = j % W, y = (j / W) | 0;
+  const jx = ux + (rnd() - 0.5) * 0.6, jy = uy + (rnd() - 0.5) * 0.6 - RULES.throwLift;
+  debris.push({ x, y, vx: jx * sp, vy: jy * sp, cx: x, cy: y, t: type[j], l: life[j], sh: shade[j], fuse });
+  type[j] = EMPTY; life[j] = 0; moved[j] = 1;
+}
+// Debris: ballistic, one cell at a time. It lands in the last free cell before anything solid and
+// becomes an ordinary pixel again. Lit gunpowder burns down its fuse in flight and pops where it is,
+// or is armed where it lands.
+function updDebris() {
+  const keep = [];
+  for (const p of debris) {
+    if (p.fuse >= 0 && --p.fuse < 0) { if (p.cy >= 0 && p.cy < H) explode(p.cx, p.cy, 1); continue; }
+    p.vy += RULES.throwGravity;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(p.vx), Math.abs(p.vy))));
+    let state = 0;  // 0 flying, 1 landed, 2 lost
+    for (let k = 0; k < steps; k++) {
+      const fx = p.x + p.vx / steps, fy = p.y + p.vy / steps, ix = Math.round(fx), iy = Math.round(fy);
+      if (ix < 0 || ix >= W || iy >= H) { state = 2; break; }       // off the sides or into the drain
+      if (iy >= 0 && !(ix === p.cx && iy === p.cy) && type[iy * W + ix] !== EMPTY) { state = 1; break; }
+      p.x = fx; p.y = fy; p.cx = ix; p.cy = iy;
+    }
+    if (state === 1) {
+      if (p.cy < 0) continue;
+      const j = p.cy * W + p.cx;
+      if (type[j] === EMPTY) {
+        type[j] = p.t; life[j] = p.l; shade[j] = p.sh; moved[j] = 1;
+        if (p.t === GUN && p.fuse >= 0) arm(j, p.fuse);
+      }
+      continue;
+    }
+    if (state === 0) keep.push(p);
+  }
+  debris = keep;
 }
 // Shrapnel flies in straight lines (with a little gravity), one cell at a time so it never skips
 // anything. It cuts out every pixel it enters except steel, which bounces it. Every cell flown costs
@@ -505,7 +571,7 @@ function updShards() {
         s.left *= RULES.shardBounce;
         break;
       }
-      if (tt === GUN) arm(j);
+      if (tt === GUN) arm(j);   // a hit grain goes up on a short fuse
       else if (tt !== EMPTY) { type[j] = EMPTY; life[j] = 0; moved[j] = 1; s.left -= RULES.shardCut; }
       s.x = fx; s.y = fy; s.cx = ix; s.cy = iy; s.left -= 1;
       s.trail.unshift(j); if (s.trail.length > 3) s.trail.pop();
@@ -674,6 +740,9 @@ function render() {
     px[i] = pack(Math.max(0, Math.min(255, r | 0)), Math.max(0, Math.min(255, g | 0)), Math.max(0, Math.min(255, b | 0)));
   }
   // shrapnel: a hot head and a cooling two-cell trail, drawn over the grid
+  // debris in flight: its own colour; lit gunpowder glows
+  for (const p of debris) { if (p.cy < 0 || p.cy >= H) continue; const c = PROPS[p.t].color, k = (p.sh / 255 - 0.5) * 24;
+    px[p.cy * W + p.cx] = p.fuse >= 0 ? SHARD_COLS[1 + (frame & 1)] : pack(Math.max(0, Math.min(255, c[0] + k | 0)), Math.max(0, Math.min(255, c[1] + k | 0)), Math.max(0, Math.min(255, c[2] + k | 0))); }
   for (const s of shards) for (let k = s.trail.length - 1; k >= 0; k--) { const i = s.trail[k]; if (i < N) px[i] = SHARD_COLS[k]; }
   bctx.putImageData(img, 0, 0);
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -708,7 +777,7 @@ requestAnimationFrame(loop);
 const pauseBtn = document.getElementById("pause");
 function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; }
 pauseBtn.onclick = togglePause;
-function clearAll() { pending = []; shards = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
+function clearAll() { pending = []; shards = []; debris = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
 document.getElementById("clear").onclick = clearAll;
 document.getElementById("welcome").onclick = () => buildWelcome();
 const rulesEl = document.getElementById("rules");
@@ -878,7 +947,7 @@ function buildSink(top) {
 }
 
 function buildWelcome() {
-  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = [];
+  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = []; debris = [];
   const cellPx = stage.clientWidth / W, labelRows = Math.ceil(20 / cellPx);
   const band = Math.max(6, Math.round(52 / cellPx));            // keep clear of the title hint
   const areaH = H - band - SINK_ROOM, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
