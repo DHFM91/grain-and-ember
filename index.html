@@ -209,9 +209,9 @@ const PROPS = [
   { id: NITRO, name: "Nitro", state: "liquid", density: 13,  movable: true,  color: [214, 204, 120], disp: 2, drag: 0.5,
     moves: "Oily liquid, sinks under water.", notes: "Stable while it sits still. Dropped more than 8 cells through air, hit by shrapnel or a flame, the whole connected pool goes off in one big blast. Landing in a liquid is safe." },
   { id: COPPER, name: "Copper", state: "solid", density: Infinity, movable: false, color: [196, 112, 62],
-    moves: "Never moves. Paints as wire.", notes: "Carries sparks one cell per tick. A cell that just carried a spark rests for 12 ticks, so sparks travel one way and a long enough loop becomes a clock." },
+    moves: "Never moves. Paints as wire.", notes: "Carries sparks one cell per tick and holds the charge forever: sparks bounce back from dead ends and from each other. Copper touching earth, mud or water (even at a corner) is grounded and drains the charge away." },
   { id: SPARK, name: "Spark", state: "energy", density: 0,   movable: false, color: [200, 240, 255],
-    moves: "Runs along copper. On its own it crackles out in a few ticks.", notes: "Lights gunpowder, nitro, oil, wax, wood and gas it touches. Jumps up to 10 cells through water (farther through brine), setting off copper and explosives on the far side." },
+    moves: "Runs along copper. On its own it crackles out in a few ticks.", notes: "Lights gunpowder, nitro, oil, wax, wood and gas it touches. Grounds out where copper touches earth, mud or water; water jolts up to 10 cells (farther through brine), setting off explosives in it." },
   { id: SPOUT, name: "Spout", state: "solid",  density: Infinity, movable: false, color: [56, 58, 64],
     moves: "Never moves.", notes: "Starts blank. Copies the first loose material, flame or spark that touches it, then keeps pouring it out. Erase it to reset." },
   { id: VOID,  name: "Void",  state: "solid",  density: Infinity, movable: false, color: [30, 8, 48],
@@ -344,8 +344,9 @@ const INTERACTIONS = [
   "Thermite can't be lit by ordinary fire or embers. A blast, lava, slag or burning thermite lights it. Lit thermite burns white-hot even underwater (turning water to steam), melts touching steel into slag (4% per tick) and stone or glass into lava, and leaves slag behind.",
   "Slag is molten steel. It lights what it touches, fuses sand and cools back into steel after 7–13 s. Water cools it into steel at once.",
   "Nitro is stable while it sits still. If it falls more than 8 cells through air and lands, or shrapnel, a blast, a spark or a flame touches it, all the nitro connected to it within 8 cells goes off at once, each cell counting as 4 grains of gunpowder. Dropping it into a liquid is safe.",
-  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever.",
-  "Sparks light gunpowder, nitro, oil, wax, wood and marsh gas they touch. A spark touching water travels through it up to 10 cells (20 through brine) and sets off copper, gunpowder and nitro on the far side. A spark painted away from copper crackles out after 4 ticks.",
+  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire instead of bouncing straight back.",
+  "Copper holds its charge forever. A spark that reaches a dead end, or meets another spark head-on, waits out the rest and comes back, so electricity keeps running back and forth (or round and round a loop) until it is grounded.",
+  "Grounding: a spark on a copper cell touching earth, mud, water or brine (sides or corners) drains away there, taking its whole pulse with it. Water takes a jolt as it does, up to 10 cells (20 through brine), setting off gunpowder and nitro in it, but it passes nothing on to other copper. Sparks light gunpowder, nitro, oil, wax, wood and marsh gas they touch; a spark painted away from copper crackles out after 4 ticks.",
   "A blank spout copies the first loose material, flame or spark that touches it, then pours it out (25% per tick): gases upward, everything else downward first.",
   "Void deletes anything touching it (left, right, above or below) except steel.",
 ];
@@ -361,7 +362,7 @@ function allocGrid(w, h) {
   const oldW = W, oldH = H, oT = type, oL = life, oS = shade;
   W = w; H = h; N = w * h;
   type = new Uint8Array(N); life = new Int16Array(N); shade = new Uint8Array(N); moved = new Uint8Array(N);
-  stampA = new Int32Array(N); stampN = 0; pending = []; shards = []; debris = [];
+  stampA = new Int32Array(N); sparkT = new Uint16Array(N); sparkGo = new Uint8Array(N); stampN = 0; pending = []; shards = []; debris = [];
   if (oT) { // keep overlapping content, anchored to the bottom
     const dy = h - oldH;
     for (let y = 0; y < oldH; y++) { const ny = y + dy; if (ny < 0 || ny >= h) continue;
@@ -919,31 +920,76 @@ function updNitro(x, y, i) {
 // Sparks. On copper (life > 0) a spark passes to every touching copper cell at rest, then leaves the copper
 // resting (copper life = rest ticks). Off copper (life < 0) it lights what it touches and crackles out.
 let zaps = []; // flat pairs: cell, last frame to draw it as electrified water
+// Water a grounding spark discharges into: flickers, and sets off explosives in it, up to sparkWater cells away.
+// (It does not pass the spark on to other copper: water is a ground.)
 function conduct(start) {
   const tag = ++stampN, q = [start, 0]; stampA[start] = tag;
   for (let h = 0; h < q.length && q.length < 400; h += 2) {
     const j = q[h], d = q[h + 1], x = j % W, y = (j / W) | 0;
     zaps.push(j, frame + 4);
     for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0 || stampA[n] === tag) continue; const tt = type[n];
-      if (tt === COPPER && life[n] === 0) { type[n] = SPARK; life[n] = RULES.sparkHead; moved[n] = 1; }
-      else if (tt === GUN) arm(n);
+      if (tt === GUN) arm(n);
       else if (tt === NITRO) arm(n, 0);
       else if (tt === WATER || tt === BRINE) { const nd = d + (tt === BRINE ? 0.5 : 1); if (nd <= RULES.sparkWater) { stampA[n] = tag; q.push(n, nd); } }
     }
   }
 }
+// Sparks on copper remember when they were made (sparkT) and whether they passed the charge on (sparkGo).
+// Sparks made in the same tick next to each other are one pulse front: if any of them passed the charge on,
+// the pulse moved on. If none did, it hit a dead end (or met another pulse head-on) and bounces back.
+let sparkT = new Uint16Array(0), sparkGo = new Uint8Array(0);
+function sparkOn(j) { type[j] = SPARK; life[j] = RULES.sparkHead; sparkT[j] = frame & 65535; sparkGo[j] = 0; moved[j] = 1; }
+const isGround = t => t === EARTH || t === MUD || t === WATER || t === BRINE;
+// Walk the pulse front through cell i (touching sparks made within `span` ticks of it, plus copper they just
+// left). With drain set, the whole front is grounded out; otherwise returns whether any of it passed the charge on.
+function sparkFront(i, span, drain) {
+  const tag = ++stampN, q = [i], t0 = sparkT[i]; stampA[i] = tag;
+  for (let h = 0; h < q.length && q.length < 600; h++) {
+    const j = q[h];
+    if (drain) { if (type[j] === SPARK && life[j] > 0) { type[j] = COPPER; life[j] = RULES.sparkCool; sparkGo[j] = 1; } }
+    else if (sparkGo[j]) return true;
+    const x = j % W, y = (j / W) | 0;
+    for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+      for (let dx = -1; dx <= 1; dx++) { const nx = x + dx; if (nx < 0 || nx >= W || (!dx && !dy)) continue;
+        const n = ny * W + nx; if (stampA[n] === tag) continue;
+        const tt = type[n], d = (sparkT[n] - t0 + 32768) & 65535;
+        const live = (tt === SPARK && life[n] > 0) || (!drain && tt === COPPER && life[n] > 0);
+        if (live && Math.abs(d - 32768) <= span) { stampA[n] = tag; q.push(n); } } }
+  }
+  return false;
+}
 function updSpark(x, y, i) {
+  const onCopper = life[i] > 0;
+  if (onCopper) { // grounded: a spark on copper touching earth, mud or water drains away
+    let ground = -1; // touching earth, mud or water, sides or corners (sparks jump corners too)
+    for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+      for (let dx = -1; dx <= 1; dx++) { const nx = x + dx; if (nx < 0 || nx >= W || (!dx && !dy)) continue;
+        const n = ny * W + nx; if (isGround(type[n]) && (ground < 0 || type[n] === WATER || type[n] === BRINE)) ground = n; } }
+    if (ground >= 0) { // the whole pulse front drains out here, not just the layer touching the ground
+      if (type[ground] === WATER || type[ground] === BRINE) conduct(ground);
+      sparkFront(i, 2, true); return;
+    }
+  }
   let wet = -1;
   for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
     for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
       const j = ny * W + nx, tt = type[j];
-      if (tt === COPPER) { if (life[j] === 0) { type[j] = SPARK; life[j] = RULES.sparkHead; moved[j] = 1; } }
+      if (tt === COPPER) { if (life[j] === 0) { sparkOn(j); sparkGo[i] = 1; } }
       else if (tt === WATER || tt === BRINE) wet = j;
       else if (tt !== EMPTY && tt !== SPARK) heat(j, 1);
     } }
-  if (wet >= 0) conduct(wet);
-  if (life[i] > 0) { if (--life[i] <= 0) { type[i] = COPPER; life[i] = RULES.sparkCool; } }
-  else if (++life[i] >= 0) { type[i] = EMPTY; life[i] = 0; }
+  if (!onCopper) { if (wet >= 0) conduct(wet); if (++life[i] >= 0) { type[i] = EMPTY; life[i] = 0; } return; }
+  if (--life[i] > 0) return;
+  // Done here. Did this pulse front pass the charge on? (Its own cell, a same-tick neighbour, or a
+  // neighbour made just after it, which it or a sibling must have fed.) If not, hold the charge and
+  // send it back once the copper around has rested (copper life < 0 counts up to that moment).
+  let onward = sparkGo[i] === 1;
+  for (let dy = -1; dy <= 1 && !onward; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue; // fed a newer spark?
+    for (let dx = -1; dx <= 1; dx++) { const nx = x + dx; if (nx < 0 || nx >= W || (!dx && !dy)) continue;
+      const j = ny * W + nx, age = (sparkT[j] - sparkT[i]) & 65535;
+      if (type[j] === SPARK && age >= 1 && age <= 3) { onward = true; break; } } }
+  if (!onward) onward = sparkFront(i, 0, false); // did any of its pulse front pass the charge on?
+  type[i] = COPPER; life[i] = onward ? RULES.sparkCool : -RULES.sparkCool;
 }
 // Spout: life = the element it copied (0 while blank).
 function updSpout(x, y, i) {
@@ -1007,7 +1053,7 @@ function updNew(x, y, i, t) {
     case GAS: updMarsh(x, y, i); break;
     case TBURN: updTBurn(x, y, i); break;
     case NITRO: updNitro(x, y, i); break;
-    case COPPER: if (life[i] > 0) life[i]--; break;
+    case COPPER: if (life[i] > 0) life[i]--; else if (life[i] < 0 && ++life[i] === 0) sparkOn(i); break; // < 0: holding charge to send back
     case SPARK: updSpark(x, y, i); break;
     case SPOUT: updSpout(x, y, i); break;
     case VOID: updVoid(x, y, i); break;
@@ -1099,7 +1145,7 @@ function paintAt(cx, cy) {
     if (tool === FIRE && cur === OIL) { type[i] = FIRE; life[i] = rint(...PROPS[FIRE].oilLife); continue; }
     if (tool === FIRE && cur === WOOD) { setCell(i, EMBER); continue; }      // fire painted on wood lights it
     if (tool === SPARK) {                                                    // sparks only go on copper or into air
-      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; }
+      if (cur === COPPER) sparkOn(i);
       else if (cur === EMPTY && rnd() < fill) setCell(i, SPARK);
       continue;
     }
@@ -1197,7 +1243,7 @@ function render() {
         case SLAG: { const cool = 1 - Math.min(1, life[i] / PROPS[SLAG].cool[0]), c = PROPS[STEEL].color, f = Math.sin(frame * 0.08 + shade[i]) * 14;
           r += (c[0] + 60 - r) * cool + f; g += (c[1] - g) * cool + f * .6; b += (c[2] - b) * cool; break; }
         case NITRO: { const sh = Math.sin(frame * 0.05 + shade[i]) * 8; r += sh + s * 8; g += sh + s * 8; b += s * 6; break; }
-        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool); r += 25 * glow + s * 16; g += 45 * glow + s * 10; b += 60 * glow + s * 6; break; }
+        case COPPER: { const glow = Math.min(1, Math.abs(life[i]) / RULES.sparkCool); r += 25 * glow + s * 16; g += 45 * glow + s * 10; b += 60 * glow + s * 6; break; }
         case SPARK: { const f = rnd(); r = 200 + 25 * f; g = 228 + 12 * f; b = 250; break; } // gentle flicker
         case SPOUT: { if (life[i] > 0 && (x + y) % 2 === 0) { const c = PROPS[life[i]].color; r = c[0] * .8; g = c[1] * .8; b = c[2] * .8; } else { r += s * 10; g += s * 10; b += s * 12; } break; }
         case VOID: { const sw = Math.sin(frame * 0.05 + x * 0.5 + y * 0.5) * 12; r += sw + s * 8; g += s * 4; b += sw * 1.5 + s * 12; break; }

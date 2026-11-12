@@ -17,7 +17,7 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 | Stone | fixed | Cooled lava. Acid eats it slowly; burning thermite melts it back into lava. |
 | Glass | fixed | Sand fused by lava, slag, thermite or long fires. Acid can't touch it; a blast shatters it back into flying sand. |
 | Wood | fixed | Catches slowly and burns as embers, leaving ash. Soaks up water; wet wood won't light until it dries. |
-| Copper | fixed | Wire. Carries sparks one cell per tick in one direction; a long enough loop becomes a clock. |
+| Copper | fixed | Wire. Carries sparks one cell per tick and holds the charge forever: sparks bounce back from dead ends and from each other until earth, mud or water grounds them out. |
 | Vine | fixed | Grows from seeds. Drinks water and grows thin tendrils upward or toward water. Dry vine burns easily. |
 | Spout | fixed | Copies the first loose material, flame or spark that touches it, then keeps pouring it out. |
 | Void | fixed | Deletes anything touching it except steel. A drain you can put anywhere. |
@@ -36,7 +36,7 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 | Brine | 12 | Salt water. Sinks under fresh water, never freezes, melts ice. Boiled by fire it leaves salt behind. |
 | Slime | 12 | Gloopy. Clings to walls and ceilings and creeps down them; grains barely move inside it. |
 | Acid | 11 | Dissolves anything it touches except steel, glass and mercury, one for one: every pixel it eats uses up a pixel of acid. Never eats other acid. |
-| Water | 10 | Falls and levels out. Turns to steam when it puts out fire. Erodes earth while flowing. Carries sparks. |
+| Water | 10 | Falls and levels out. Turns to steam when it puts out fire. Erodes earth while flowing. Grounds electricity. |
 | Molten wax | 9 | Thick liquid. Floats on water, sinks under oil. Hardens away from fire; water, brine, snow and ice set it instantly. |
 | Oil | 8 | Floats on water. Burns. |
 | Ash | 6 | Light powder left by burnt wood. Floats on water, then soaks into lye and sinks. |
@@ -44,7 +44,7 @@ A falling-sand sandbox in the tradition of *Falling Sand* and *Noita*. Paint ele
 | Foam | 2 | Froth from acid meeting lye. Rises through liquids, heaps on top, pops after a few seconds. |
 | Fire | — | Burns where painted, spreads through oil, feeds on wax, lights wood and gas, burns out into smoke. |
 | Lit thermite | 16 | Burning thermite: melts steel into slag and stone or glass into lava. |
-| Spark | — | Runs along copper, jumps through water (farther through brine), lights explosives, oil, wax, wood and gas. |
+| Spark | — | Runs along copper forever until grounded by earth, mud or water. Water it grounds into gets a jolt that sets off explosives. Lights explosives, oil, wax, wood and gas. |
 | Steam | 0.5 | Rises, never fades, condenses back into water and rains down. |
 | Marsh gas | 0.6 | Rises and pools under ceilings. A flame sets the whole pocket burning in a quick flash. |
 | Smoke | 0.4 | Rises, fades, despawns. |
