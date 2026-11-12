@@ -210,7 +210,7 @@ const PROPS = [
     moves: "Oily liquid, sinks under water.", notes: "Stable while it sits still. Dropped more than 8 cells through air, hit by shrapnel or a flame, the whole connected pool goes off in one big blast. Landing in a liquid is safe." },
   { id: COPPER, name: "Copper", state: "solid", density: Infinity, movable: false, color: [196, 112, 62],
     moves: "Never moves. Paints as wire.", notes: "Carries sparks one cell per tick. A cell that just carried a spark rests for 12 ticks, so sparks travel one way and a long enough loop becomes a clock." },
-  { id: SPARK, name: "Spark", state: "energy", density: 0,   movable: false, color: [236, 214, 170],
+  { id: SPARK, name: "Spark", state: "energy", density: 0,   movable: false, color: [200, 240, 255],
     moves: "Runs along copper. On its own it crackles out in a few ticks.", notes: "Lights gunpowder, nitro, oil, wax, wood and gas it touches. Jumps up to 10 cells through water (farther through brine), setting off copper and explosives on the far side." },
   { id: SPOUT, name: "Spout", state: "solid",  density: Infinity, movable: false, color: [56, 58, 64],
     moves: "Never moves.", notes: "Starts blank. Copies the first loose material, flame or spark that touches it, then keeps pouring it out. Erase it to reset." },
@@ -345,7 +345,7 @@ const INTERACTIONS = [
   "Thermite can't be lit by ordinary fire or embers. A blast, lava, slag or burning thermite lights it. Lit thermite burns white-hot even underwater (turning water to steam), melts touching steel into slag (4% per tick) and stone or glass into lava, and leaves slag behind.",
   "Slag is molten steel. It lights what it touches, fuses sand and cools back into steel after 7–13 s. Water cools it into steel at once.",
   "Nitro is stable while it sits still. If it falls more than 8 cells through air and lands, or shrapnel, a blast, a spark or a flame touches it, all the nitro connected to it within 8 cells goes off at once, each cell counting as 4 grains of gunpowder. Dropping it into a liquid is safe.",
-  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever.",
+  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever. A spark painted onto copper always sets off one way only (it prefers right, then down), so clicking one anywhere on a loop, corners included, starts a clock.",
   "Sparks light gunpowder, nitro, oil, wax, wood and marsh gas they touch. A spark touching water travels through it up to 10 cells (20 through brine) and sets off copper, gunpowder and nitro on the far side. A spark painted away from copper crackles out after 4 ticks.",
   "A blank spout copies the first loose material, flame or spark that touches it, then pours it out (25% per tick): gases upward, everything else downward first.",
   "Void deletes anything touching it (left, right, above or below) except steel.",
@@ -1092,6 +1092,13 @@ const FILL_BY_STATE = { solid: 1, powder: 0.45, liquid: 0.5, gas: 0.35, energy: 
 const PAINT_FILL = { [EMPTY]: 1, [SPARK]: 0.25 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool] ?? FILL_BY_STATE[PROPS[tool].state];
+  const lit = []; // copper cells this dab turned into sparks
+  // A spark dab that touches copper only lights the copper (no stray sparks in the air around it,
+  // which could set off the wire in a second direction).
+  let onWire = false;
+  if (tool === SPARK) for (let dy = -r; dy <= r && !onWire; dy++) for (let dx = -r; dx <= r; dx++) {
+    const x = cx + dx, y = cy + dy;
+    if (dx * dx + dy * dy <= r * r && x >= 0 && y >= 0 && x < W && y < H && type[y * W + x] === COPPER) { onWire = true; break; } }
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
     if (dx * dx + dy * dy > r * r) continue;
     const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= W || y >= H) continue;
@@ -1101,14 +1108,40 @@ function paintAt(cx, cy) {
     if (tool === FIRE && cur === OIL) { type[i] = FIRE; life[i] = rint(...PROPS[FIRE].oilLife); continue; }
     if (tool === FIRE && cur === WOOD) { setCell(i, EMBER); continue; }      // fire painted on wood lights it
     if (tool === SPARK) {                                                    // sparks only go on copper or into air
-      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; }
-      else if (cur === EMPTY && rnd() < fill) setCell(i, SPARK);
+      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; lit.push(i); }
+      else if (cur === EMPTY && !onWire && rnd() < fill) setCell(i, SPARK);
       continue;
     }
     // The brush wins: anything already here is replaced outright.
     // Empty space is sprinkled at the tool's fill rate so poured elements look granular.
     if (cur !== EMPTY || rnd() < fill) setCell(i, tool);
   }
+  if (lit.length) sendOneWay(lit, cx, cy);
+}
+// A dab of spark on copper sets off one way only. Every place the spark could leave the dabbed patch
+// (each group of touching copper cells around it) is found, one is kept (the one furthest right/down)
+// and the rest are put to rest. Without this a spark clicked onto a loop splits into two sparks running
+// opposite ways round it, which meet and cancel out; with it, a loop keeps a spark circling.
+function sendOneWay(lit, cx, cy) {
+  const tag = ++stampN, edge = [];
+  for (const i of lit) stampA[i] = tag;
+  for (const i of lit) { const x = i % W, y = (i / W) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const j = ny * W + nx;
+      if (type[j] === COPPER && stampA[j] !== tag) { stampA[j] = tag; edge.push(j); } } }
+  const etag = ++stampN; for (const j of edge) stampA[j] = etag; // edge cells not yet grouped
+  const groups = [];
+  for (const j0 of edge) { if (stampA[j0] !== etag) continue;
+    const g = [j0]; stampA[j0] = tag; let score = 0;
+    for (let k = 0; k < g.length; k++) { const j = g[k], x = j % W, y = (j / W) | 0; score += (x - cx) + (y - cy) + (x - cx) * 0.001;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const n = ny * W + nx;
+        if (stampA[n] === etag) { stampA[n] = tag; g.push(n); } } }
+    groups.push({ g, score: score / g.length });
+  }
+  if (groups.length < 2) return;
+  let best = groups[0]; for (const G of groups) if (G.score > best.score) best = G;
+  for (const G of groups) if (G !== best) for (const j of G.g) life[j] = RULES.sparkCool;
 }
 let down = false, last = null, ptr = null, hover = null;
 const probe = document.getElementById("probe");
@@ -1200,8 +1233,8 @@ function render() {
         case SLAG: { const cool = 1 - Math.min(1, life[i] / PROPS[SLAG].cool[0]), c = PROPS[STEEL].color, f = Math.sin(frame * 0.08 + shade[i]) * 14;
           r += (c[0] + 60 - r) * cool + f; g += (c[1] - g) * cool + f * .6; b += (c[2] - b) * cool; break; }
         case NITRO: { const sh = Math.sin(frame * 0.05 + shade[i]) * 8; r += sh + s * 8; g += sh + s * 8; b += s * 6; break; }
-        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool) * 0.5; r += 40 * glow + s * 16; g += 40 * glow + s * 10; b += 30 * glow + s * 6; break; }
-        case SPARK: r = 236; g = 214; b = 170; break; // steady warm glow (no flicker, not a hard white flash)
+        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool); r += 50 * glow + s * 16; g += 90 * glow + s * 10; b += 120 * glow + s * 6; break; } // smooth fading trail
+        case SPARK: r = 200; g = 240; b = 255; break; // steady: no per-frame flicker
         case SPOUT: { if (life[i] > 0 && (x + y) % 2 === 0) { const c = PROPS[life[i]].color; r = c[0] * .8; g = c[1] * .8; b = c[2] * .8; } else { r += s * 10; g += s * 10; b += s * 12; } break; }
         case VOID: { const sw = Math.sin(frame * 0.05 + x * 0.5 + y * 0.5) * 12; r += sw + s * 8; g += s * 4; b += sw * 1.5 + s * 12; break; }
       }
