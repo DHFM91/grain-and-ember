@@ -290,7 +290,6 @@ const RULES = {
   sparkCool: 12,         // ticks a copper cell rests after carrying a spark
   sparkFree: 4,          // ticks a spark painted off copper lasts
   sparkWater: 10,        // cells a spark can travel through connected water (brine counts double)
-  zapGlow: 45,           // frames electrified water takes to fade back to normal
   spoutRate: 0.25,       // chance per tick a spout pours one cell
 };
 
@@ -345,7 +344,7 @@ const INTERACTIONS = [
   "Thermite can't be lit by ordinary fire or embers. A blast, lava, slag or burning thermite lights it. Lit thermite burns white-hot even underwater (turning water to steam), melts touching steel into slag (4% per tick) and stone or glass into lava, and leaves slag behind.",
   "Slag is molten steel. It lights what it touches, fuses sand and cools back into steel after 7–13 s. Water cools it into steel at once.",
   "Nitro is stable while it sits still. If it falls more than 8 cells through air and lands, or shrapnel, a blast, a spark or a flame touches it, all the nitro connected to it within 8 cells goes off at once, each cell counting as 4 grains of gunpowder. Dropping it into a liquid is safe.",
-  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever. A spark painted onto copper always sets off one way only (it prefers right, then down), so clicking one anywhere on a loop, corners included, starts a clock.",
+  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever.",
   "Sparks light gunpowder, nitro, oil, wax, wood and marsh gas they touch. A spark touching water travels through it up to 10 cells (20 through brine) and sets off copper, gunpowder and nitro on the far side. A spark painted away from copper crackles out after 4 ticks.",
   "A blank spout copies the first loose material, flame or spark that touches it, then pours it out (25% per tick): gases upward, everything else downward first.",
   "Void deletes anything touching it (left, right, above or below) except steel.",
@@ -362,7 +361,7 @@ function allocGrid(w, h) {
   const oldW = W, oldH = H, oT = type, oL = life, oS = shade;
   W = w; H = h; N = w * h;
   type = new Uint8Array(N); life = new Int16Array(N); shade = new Uint8Array(N); moved = new Uint8Array(N);
-  stampA = new Int32Array(N); zapT = new Int32Array(N); stampN = 0; pending = []; shards = []; debris = [];
+  stampA = new Int32Array(N); stampN = 0; pending = []; shards = []; debris = [];
   if (oT) { // keep overlapping content, anchored to the bottom
     const dy = h - oldH;
     for (let y = 0; y < oldH; y++) { const ny = y + dy; if (ny < 0 || ny >= h) continue;
@@ -919,14 +918,12 @@ function updNitro(x, y, i) {
 }
 // Sparks. On copper (life > 0) a spark passes to every touching copper cell at rest, then leaves the copper
 // resting (copper life = rest ticks). Off copper (life < 0) it lights what it touches and crackles out.
-// Electrified water: zapT[cell] = the frame its faint glow has faded by. It fades slowly instead of
-// flashing, so pulses through a pool never strobe (kept gentle for photosensitive players).
-let zapT = new Int32Array(0);
+let zaps = []; // flat pairs: cell, last frame to draw it as electrified water
 function conduct(start) {
   const tag = ++stampN, q = [start, 0]; stampA[start] = tag;
   for (let h = 0; h < q.length && q.length < 400; h += 2) {
     const j = q[h], d = q[h + 1], x = j % W, y = (j / W) | 0;
-    zapT[j] = frame + RULES.zapGlow;
+    zaps.push(j, frame + 4);
     for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0 || stampA[n] === tag) continue; const tt = type[n];
       if (tt === COPPER && life[n] === 0) { type[n] = SPARK; life[n] = RULES.sparkHead; moved[n] = 1; }
       else if (tt === GUN) arm(n);
@@ -989,6 +986,7 @@ function step() {
   }
   for (const e of emitters) if (e.i < N && type[e.i] === EMPTY && rnd() < e.rate) setCell(e.i, e.types[e.n++ % e.types.length]);
   processBlasts();
+  if (zaps.length) { const keep = []; for (let k = 0; k < zaps.length; k += 2) if (zaps[k + 1] >= frame) keep.push(zaps[k], zaps[k + 1]); zaps = keep; }
   frame++;
 }
 function updNew(x, y, i, t) {
@@ -1092,13 +1090,6 @@ const FILL_BY_STATE = { solid: 1, powder: 0.45, liquid: 0.5, gas: 0.35, energy: 
 const PAINT_FILL = { [EMPTY]: 1, [SPARK]: 0.25 };
 function paintAt(cx, cy) {
   const r = +sizeEl.value, fill = PAINT_FILL[tool] ?? FILL_BY_STATE[PROPS[tool].state];
-  const lit = []; // copper cells this dab turned into sparks
-  // A spark dab that touches copper only lights the copper (no stray sparks in the air around it,
-  // which could set off the wire in a second direction).
-  let onWire = false;
-  if (tool === SPARK) for (let dy = -r; dy <= r && !onWire; dy++) for (let dx = -r; dx <= r; dx++) {
-    const x = cx + dx, y = cy + dy;
-    if (dx * dx + dy * dy <= r * r && x >= 0 && y >= 0 && x < W && y < H && type[y * W + x] === COPPER) { onWire = true; break; } }
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
     if (dx * dx + dy * dy > r * r) continue;
     const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= W || y >= H) continue;
@@ -1108,40 +1099,14 @@ function paintAt(cx, cy) {
     if (tool === FIRE && cur === OIL) { type[i] = FIRE; life[i] = rint(...PROPS[FIRE].oilLife); continue; }
     if (tool === FIRE && cur === WOOD) { setCell(i, EMBER); continue; }      // fire painted on wood lights it
     if (tool === SPARK) {                                                    // sparks only go on copper or into air
-      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; lit.push(i); }
-      else if (cur === EMPTY && !onWire && rnd() < fill) setCell(i, SPARK);
+      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; }
+      else if (cur === EMPTY && rnd() < fill) setCell(i, SPARK);
       continue;
     }
     // The brush wins: anything already here is replaced outright.
     // Empty space is sprinkled at the tool's fill rate so poured elements look granular.
     if (cur !== EMPTY || rnd() < fill) setCell(i, tool);
   }
-  if (lit.length) sendOneWay(lit, cx, cy);
-}
-// A dab of spark on copper sets off one way only. Every place the spark could leave the dabbed patch
-// (each group of touching copper cells around it) is found, one is kept (the one furthest right/down)
-// and the rest are put to rest. Without this a spark clicked onto a loop splits into two sparks running
-// opposite ways round it, which meet and cancel out; with it, a loop keeps a spark circling.
-function sendOneWay(lit, cx, cy) {
-  const tag = ++stampN, edge = [];
-  for (const i of lit) stampA[i] = tag;
-  for (const i of lit) { const x = i % W, y = (i / W) | 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const j = ny * W + nx;
-      if (type[j] === COPPER && stampA[j] !== tag) { stampA[j] = tag; edge.push(j); } } }
-  const etag = ++stampN; for (const j of edge) stampA[j] = etag; // edge cells not yet grouped
-  const groups = [];
-  for (const j0 of edge) { if (stampA[j0] !== etag) continue;
-    const g = [j0]; stampA[j0] = tag; let score = 0;
-    for (let k = 0; k < g.length; k++) { const j = g[k], x = j % W, y = (j / W) | 0; score += (x - cx) + (y - cy) + (x - cx) * 0.001;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const n = ny * W + nx;
-        if (stampA[n] === etag) { stampA[n] = tag; g.push(n); } } }
-    groups.push({ g, score: score / g.length });
-  }
-  if (groups.length < 2) return;
-  let best = groups[0]; for (const G of groups) if (G.score > best.score) best = G;
-  for (const G of groups) if (G !== best) for (const j of G.g) life[j] = RULES.sparkCool;
 }
 let down = false, last = null, ptr = null, hover = null;
 const probe = document.getElementById("probe");
@@ -1185,6 +1150,7 @@ function hideHint() {
 // ---- rendering (ABGR little-endian)
 const pack = (r, g, b) => (255 << 24 | b << 16 | g << 8 | r) >>> 0;
 const SHARD_COLS = [pack(255, 250, 220), pack(255, 196, 90), pack(200, 96, 32)];
+const ZAP_COLS = [pack(92, 150, 232), pack(78, 138, 228)]; // kept close to water's own colour so zaps don't flash
 const FIRE_COLS = [pack(255, 236, 140), pack(255, 190, 60), pack(255, 128, 24), pack(226, 70, 18), pack(170, 34, 10)];
 function render() {
   for (let i = 0; i < N; i++) {
@@ -1200,8 +1166,7 @@ function render() {
     else if (t === SAND) { r += s * 30; g += s * 26; b += s * 20; }
     else if (t === GUN) { const k = shade[i] > 210 ? 46 : shade[i] < 50 ? -34 : 0; r += k + s * 10; g += k + s * 10; b += k + s * 12; }
     else if (t === WATER) { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh;
-      if (life[i] > 0) { const f = Math.min(1, life[i] / RULES.freezeTicks) * 0.7, c = PROPS[ICE].color; r += (c[0] - r) * f; g += (c[1] - g) * f; b += (c[2] - b) * f; }
-      if (zapT[i] > frame) { const z = (zapT[i] - frame) / RULES.zapGlow * 0.3; r += (150 - r) * z; g += (200 - g) * z; b += (240 - b) * z; } }
+      if (life[i] > 0) { const f = Math.min(1, life[i] / RULES.freezeTicks) * 0.7, c = PROPS[ICE].color; r += (c[0] - r) * f; g += (c[1] - g) * f; b += (c[2] - b) * f; } }
     else if (t === ICE) { const thaw = 1 - Math.min(1, life[i] / 600); r += s * 14 - 60 * thaw; g += s * 10 - 40 * thaw; b += s * 6 - 6 * thaw; }
     else if (t === OIL) { r += s * 16; g += s * 10; b += s * 4; }
     else if (t === ACID) { const sh = Math.sin(frame * 0.09 + shade[i]) * 14; r += sh * .4 + s * 10; g += sh + s * 10; b += s * 8; }
@@ -1212,8 +1177,7 @@ function render() {
       const x = i % W, y = (i / W) | 0;
       switch (t) {
         case SALT: case LYE: r += s * 18; g += s * 18; b += s * 16; break;
-        case BRINE: { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh * .8;
-          if (zapT[i] > frame) { const z = (zapT[i] - frame) / RULES.zapGlow * 0.3; r += (150 - r) * z; g += (200 - g) * z; b += (240 - b) * z; } break; }
+        case BRINE: { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh * .8; break; }
         case LAVA: { const f = Math.sin(frame * 0.07 + shade[i] * 0.1 + x * 0.3) * 0.5 + 0.5; r = 200 + 55 * f; g = 50 + 70 * f + s * 30; b = 10 + 20 * f; break; }
         case STONE: r += s * 24; g += s * 24; b += s * 24; break;
         case GLASS: { const glint = (x + y * 2 + (shade[i] >> 6)) % 9 === 0 ? 70 : 0; r += glint + s * 10; g += glint + s * 10; b += glint + s * 8; break; }
@@ -1233,8 +1197,8 @@ function render() {
         case SLAG: { const cool = 1 - Math.min(1, life[i] / PROPS[SLAG].cool[0]), c = PROPS[STEEL].color, f = Math.sin(frame * 0.08 + shade[i]) * 14;
           r += (c[0] + 60 - r) * cool + f; g += (c[1] - g) * cool + f * .6; b += (c[2] - b) * cool; break; }
         case NITRO: { const sh = Math.sin(frame * 0.05 + shade[i]) * 8; r += sh + s * 8; g += sh + s * 8; b += s * 6; break; }
-        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool); r += 50 * glow + s * 16; g += 90 * glow + s * 10; b += 120 * glow + s * 6; break; } // smooth fading trail
-        case SPARK: r = 200; g = 240; b = 255; break; // steady: no per-frame flicker
+        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool); r += 25 * glow + s * 16; g += 45 * glow + s * 10; b += 60 * glow + s * 6; break; }
+        case SPARK: { const f = rnd(); r = 200 + 25 * f; g = 228 + 12 * f; b = 250; break; } // gentle flicker
         case SPOUT: { if (life[i] > 0 && (x + y) % 2 === 0) { const c = PROPS[life[i]].color; r = c[0] * .8; g = c[1] * .8; b = c[2] * .8; } else { r += s * 10; g += s * 10; b += s * 12; } break; }
         case VOID: { const sw = Math.sin(frame * 0.05 + x * 0.5 + y * 0.5) * 12; r += sw + s * 8; g += s * 4; b += sw * 1.5 + s * 12; break; }
       }
@@ -1246,6 +1210,8 @@ function render() {
   for (const p of debris) { if (p.cy < 0 || p.cy >= H) continue; const c = PROPS[p.t].color, k = (p.sh / 255 - 0.5) * 24;
     px[p.cy * W + p.cx] = p.fuse >= 0 ? SHARD_COLS[1 + (frame & 1)] : pack(Math.max(0, Math.min(255, c[0] + k | 0)), Math.max(0, Math.min(255, c[1] + k | 0)), Math.max(0, Math.min(255, c[2] + k | 0))); }
   for (const s of shards) for (let k = s.trail.length - 1; k >= 0; k--) { const i = s.trail[k]; if (i < N) px[i] = SHARD_COLS[k]; }
+  // electrified water flashes for a few frames
+  for (let k = 0; k < zaps.length; k += 2) { const i = zaps[k]; if (i < N && (type[i] === WATER || type[i] === BRINE)) px[i] = rnd() < 0.5 ? ZAP_COLS[0] : ZAP_COLS[1]; }
   bctx.putImageData(img, 0, 0);
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
@@ -1279,7 +1245,7 @@ requestAnimationFrame(loop);
 const pauseBtn = document.getElementById("pause");
 function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; }
 pauseBtn.onclick = togglePause;
-function clearAll() { pending = []; shards = []; debris = []; zapT.fill(0); type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
+function clearAll() { pending = []; shards = []; debris = []; zaps = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
 document.getElementById("clear").onclick = clearAll;
 document.getElementById("welcome").onclick = () => buildWelcome();
 const rulesEl = document.getElementById("rules");
@@ -1449,7 +1415,7 @@ function buildSink(top) {
 }
 
 function buildWelcome() {
-  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = []; debris = []; zapT.fill(0);
+  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = []; debris = []; zaps = [];
   const cellPx = stage.clientWidth / W, labelRows = Math.ceil(20 / cellPx);
   const band = Math.max(6, Math.round(52 / cellPx));            // keep clear of the title hint
   const areaH = H - band - SINK_ROOM, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
