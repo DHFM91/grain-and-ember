@@ -43,7 +43,14 @@ body {
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
   display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
 }
+.palette { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.groups { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.groups button { font: 500 12px var(--mono); color: var(--dim); background: transparent; border: 0; border-left: 1px solid var(--line); padding: 7px 9px; cursor: pointer; }
+.groups button:first-child { border-left: 0; }
+.groups button:hover { color: var(--ink); }
+.groups button[aria-pressed="true"] { color: var(--ink); background: #1a1d1e; box-shadow: inset 0 -2px 0 var(--ember); }
+.groups button:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
 .tool {
   font: 500 12px var(--mono); color: var(--ink); background: transparent;
   border: 1px solid var(--line); border-radius: 3px; padding: 7px 10px 7px 8px;
@@ -108,7 +115,10 @@ ul.rx li::marker { color: var(--ember); }
 </div>
 
 <div class="bar" role="toolbar" aria-label="Paint tools">
-  <div class="tools" id="tools"></div>
+  <div class="palette">
+    <div class="groups" id="groups" role="group" aria-label="Element groups"></div>
+    <div class="tools" id="tools"></div>
+  </div>
   <label class="brush" for="size">Brush <input id="size" type="range" min="1" max="14" value="5"><output id="sizeOut">5</output></label>
   <div class="speed" role="group" aria-label="Simulation speed">Speed <div class="speed-opts" id="speedOpts"></div></div>
   <div class="actions">
@@ -122,6 +132,9 @@ ul.rx li::marker { color: var(--ember); }
 <script id="core">
 // ===================== SIMULATION CORE (no DOM) =====================
 const EMPTY = 0, EARTH = 1, SAND = 2, WATER = 3, OIL = 4, FIRE = 5, SMOKE = 6, MUD = 7, STEAM = 8, WAX = 9, LWAX = 10, ICE = 11, STEEL = 12, ACID = 13, GUN = 14;
+const SALT = 15, BRINE = 16, LAVA = 17, STONE = 18, GLASS = 19, WOOD = 20, EMBER = 21, ASH = 22, SEED = 23, VINE = 24,
+      SNOW = 25, MERCURY = 26, SLIME = 27, LYE = 28, FOAM = 29, GAS = 30, THERMITE = 31, TBURN = 32, SLAG = 33, NITRO = 34,
+      COPPER = 35, SPARK = 36, SPOUT = 37, VOID = 38;
 
 // Single source of truth for element behaviour. The rules sheet is generated from this table.
 const PROPS = [
@@ -150,11 +163,59 @@ const PROPS = [
   { id: ICE,   name: "Ice",   state: "solid",  density: Infinity, movable: false, color: [178, 222, 242], melt: [1500, 2700],
     moves: "Never moves. Paints as a solid line.", notes: "Slowly melts into water after 25–45 s. Water that stays touching it for 2 s freezes into new ice, so ice spreads through pools. Fire melts it instantly." },
   { id: STEEL, name: "Steel", state: "solid",  density: Infinity, movable: false, color: [134, 144, 156],
-    moves: "Never moves. Paints as a solid line.", notes: "Completely inert: nothing burns, erodes, melts, freezes or dissolves it. Only the brush (including Erase) can remove it." },
+    moves: "Never moves. Paints as a solid line.", notes: "Inert to everything but burning thermite, which melts it into slag. Fire, water, acid and blasts can't hurt it." },
   { id: ACID,  name: "Acid",  state: "liquid", density: 11,  movable: true,  color: [126, 232, 58], disp: 4, drag: 0.5,
     moves: "Falls, then flows sideways up to 4 cells per tick. Slightly heavier than water.", notes: "Dissolves anything it touches except steel and other acid, one for one: each pixel it eats uses up one pixel of acid." },
   { id: GUN,   name: "Gunpowder", state: "powder", density: 16, movable: true, color: [96, 92, 100],
     moves: "Falls and piles like sand.", notes: "Lit by fire, blasts and shrapnel; goes off a few ticks later in small pops of the grains around it, so piles crackle like firecrackers. Blasts destroy the core, throw loose pixels (including live and lit gunpowder) clear, and spray shrapnel. More grains per pop, bigger blast." },
+  { id: SALT,  name: "Salt",  state: "powder", density: 15,  movable: true,  color: [232, 232, 226],
+    moves: "Falls and piles like sand.", notes: "Dissolves into water, turning it into brine. Melts ice and snow it touches." },
+  { id: BRINE, name: "Brine", state: "liquid", density: 12,  movable: true,  color: [52, 128, 168], disp: 4, drag: 0.5,
+    moves: "Flows like water, but heavier, so it sinks under fresh water in layers.", notes: "Salt water. Never freezes and slowly melts ice. Boiled by fire it leaves salt behind and its steam rains down as fresh water." },
+  { id: LAVA,  name: "Lava",  state: "liquid", density: 14,  movable: true,  color: [236, 84, 22], disp: 1, drag: 0.85,
+    moves: "Thick, slow liquid. Sinks through water (and sets as it does).", notes: "Sets off oil, wax, wood, gas and explosives, lights thermite, melts ice and snow, and slowly turns sand into glass. Water touching it flashes to steam and the lava sets into stone." },
+  { id: STONE, name: "Stone", state: "solid",  density: Infinity, movable: false, color: [104, 104, 110],
+    moves: "Never moves.", notes: "Cooled lava. Acid eats it at a quarter of its usual speed. Burning thermite melts it back into lava." },
+  { id: GLASS, name: "Glass", state: "solid",  density: Infinity, movable: false, color: [128, 184, 198],
+    moves: "Never moves.", notes: "Sand fused by lava, slag, thermite or long-burning fire. Acid can't touch it, but a blast shatters it back into flying sand." },
+  { id: WOOD,  name: "Wood",  state: "solid",  density: Infinity, movable: false, color: [124, 84, 46], wet: 900, wick: 30,
+    moves: "Never moves.", notes: "Catches slowly and burns as embers for a long time, leaving ash. Soaks up water it touches, and wet wood won't light until it dries." },
+  { id: EMBER, name: "Ember", state: "solid",  density: Infinity, movable: false, color: [206, 72, 22], life: [420, 840],
+    moves: "Never moves.", notes: "Burning wood. Throws flames, lights wood next to it, and crumbles into ash after 7–14 s. Water puts it out, leaving soaked wood." },
+  { id: ASH,   name: "Ash",   state: "powder", density: 6,   movable: true,  color: [172, 170, 164],
+    moves: "Light powder. Piles, and floats on water.", notes: "Left by burnt wood. Soaked in water for about 3 s it turns into lye and sinks." },
+  { id: SEED,  name: "Seed",  state: "powder", density: 14,  movable: true,  color: [196, 172, 92],
+    moves: "Falls like sand.", notes: "Resting on mud, or on earth with water within 3 cells, it sprouts into a vine." },
+  { id: VINE,  name: "Vine",  state: "solid",  density: Infinity, movable: false, color: [64, 156, 58],
+    moves: "Grows: thin tendrils upward, or sideways toward nearby water.", notes: "Drinks water it touches and passes it along its stem. Needs water to grow. Dry vine burns readily, well-watered vine barely." },
+  { id: SNOW,  name: "Snow",  state: "powder", density: 4,   movable: true,  color: [240, 244, 250], melt: [700, 1400],
+    moves: "Light powder: piles softly, floats on liquids.", notes: "Melts to water in 12–23 s, faster in water. A pile 10 deep packs its bottom into ice. Fire melts it instantly; molten wax sets on it." },
+  { id: MERCURY, name: "Mercury", state: "liquid", density: 22, movable: true, color: [192, 198, 208], disp: 6, drag: 0.2,
+    moves: "Very runny. The heaviest thing there is, so it sinks through everything.", notes: "Sand, gunpowder and even molten slag float on it. Acid can't eat it." },
+  { id: SLIME, name: "Slime", state: "liquid", density: 12,  movable: true,  color: [168, 70, 200], disp: 1, drag: 0.97,
+    moves: "Gloopy. Clings to walls and ceilings and creeps down them instead of falling.", notes: "So thick that grains are held almost still inside it. Acid eats it at a quarter of its usual speed." },
+  { id: LYE,   name: "Lye",   state: "powder", density: 14,  movable: true,  color: [228, 220, 168],
+    moves: "Falls and piles like sand.", notes: "Cancels acid: the two turn into water and foam. Also made by soaking ash." },
+  { id: FOAM,  name: "Foam",  state: "powder", density: 2,   movable: true,  color: [234, 240, 234], life: [240, 600],
+    moves: "Drifts slowly down through air, rises through liquids and heaps on top of them.", notes: "Froth from acid meeting lye. Pops after 4–10 s; fire pops it at once." },
+  { id: GAS,   name: "Marsh gas", state: "gas", density: 0.6, movable: true,  color: [104, 124, 58], life: [3000, 6000],
+    moves: "Rises and pools under ceilings and overhangs.", notes: "Bubbles slowly out of mud lying under water. Any flame sets a pocket burning through in a quick flash." },
+  { id: THERMITE, name: "Thermite", state: "powder", density: 16, movable: true, color: [156, 74, 52],
+    moves: "Falls and piles like sand.", notes: "Ordinary fire won't light it; a blast, lava, slag or other burning thermite will. Once lit it melts steel." },
+  { id: TBURN, name: "Lit thermite", state: "powder", density: 16, movable: true, color: [255, 246, 220], life: [150, 260],
+    moves: "Falls and piles while it burns.", notes: "Burns white-hot for 2.5–4 s, even underwater. Melts steel into slag and stone or glass into lava, lights everything. Leaves slag behind." },
+  { id: SLAG,  name: "Slag",  state: "liquid", density: 20,  movable: true,  color: [255, 150, 40], disp: 1, drag: 0.8, cool: [400, 800],
+    moves: "Thick, heavy liquid. Sinks through everything but mercury.", notes: "Molten steel. Lights what it touches and fuses sand. Cools back into steel after 7–13 s, or instantly in water." },
+  { id: NITRO, name: "Nitro", state: "liquid", density: 13,  movable: true,  color: [214, 204, 120], disp: 2, drag: 0.5,
+    moves: "Oily liquid, sinks under water.", notes: "Stable while it sits still. Dropped more than 8 cells through air, hit by shrapnel or a flame, the whole connected pool goes off in one big blast. Landing in a liquid is safe." },
+  { id: COPPER, name: "Copper", state: "solid", density: Infinity, movable: false, color: [196, 112, 62],
+    moves: "Never moves. Paints as wire.", notes: "Carries sparks one cell per tick. A cell that just carried a spark rests for 12 ticks, so sparks travel one way and a long enough loop becomes a clock." },
+  { id: SPARK, name: "Spark", state: "energy", density: 0,   movable: false, color: [200, 240, 255],
+    moves: "Runs along copper. On its own it crackles out in a few ticks.", notes: "Lights gunpowder, nitro, oil, wax, wood and gas it touches. Jumps up to 10 cells through water (farther through brine), setting off copper and explosives on the far side." },
+  { id: SPOUT, name: "Spout", state: "solid",  density: Infinity, movable: false, color: [56, 58, 64],
+    moves: "Never moves.", notes: "Starts blank. Copies the first loose material, flame or spark that touches it, then keeps pouring it out. Erase it to reset." },
+  { id: VOID,  name: "Void",  state: "solid",  density: Infinity, movable: false, color: [30, 8, 48],
+    moves: "Never moves.", notes: "Deletes anything that touches it except steel. A drain you can put anywhere." },
 ];
 
 // Interaction tunables (per tick probabilities)
@@ -199,6 +260,37 @@ const RULES = {
   acidBite: 0.2,         // chance per tick that an acid cell dissolves one touching pixel (and itself with it)
   freezeTicks: 120,      // ticks of ice contact (~2 s) before a water cell freezes
   meltCool: 600,         // fresh meltwater must touch ice this much longer (~10 s) before it can refreeze
+  saltDissolve: 0.08,    // chance per tick a salt grain touching water dissolves (the water becomes brine)
+  saltMelt: 0.03,        // chance per tick salt melts a touching ice or snow cell
+  brineMelt: 0.01,       // chance per tick brine melts a touching ice or snow cell
+  lavaPuff: 0.012,       // chance per tick lava with open air above throws a small flame or smoke
+  glassFuse: 0.02,       // chance per tick lava, slag or thermite fuses a touching sand grain into glass
+  fireGlass: 0.003,      // the same for ordinary fire, so only long fires (oil, embers) leave glass
+  woodCatch: 0.02,       // chance per tick a flame lights a touching cell of dry wood
+  woodSpread: 0.012,     // chance per tick an ember lights a touching cell of dry wood
+  woodDrink: 0.004,      // chance per tick wood touching water soaks up that water cell
+  emberFlame: 0.05,      // chance per tick an ember throws a flame into an empty neighbour
+  ashSoak: 180,          // ticks ash must touch water to turn into lye
+  seedSprout: 0.03,      // chance per tick a resting seed checks for wet ground and sprouts
+  vineGrow: 0.012,       // chance per tick a watered vine cell tries to grow
+  vineMax: 100,          // water a vine cell can hold; growing costs vineCost, each stem cell passes on 4 less
+  vineCost: 12,
+  snowPack: 10,          // snow with this many snow/ice cells stacked on it packs into ice
+  slimeCreep: 0.05,      // chance per tick slime touching a wall or ceiling moves at all
+  marshGas: 0.0004,      // chance per tick settled mud under water turns the water above it into marsh gas
+  gasFlame: [6, 14],     // burn time of a cell of burning marsh gas
+  steelMelt: 0.04,       // chance per tick lit thermite melts each touching steel cell into slag
+  stoneMelt: 0.02,       // the same for stone and glass, which melt into lava
+  thermSpread: 0.3,      // chance per tick lit thermite lights touching thermite
+  thermSlag: 0.3,        // share of burnt-out thermite grains that leave a drop of slag
+  nitroDrop: 8,          // cells nitro may fall through air before landing sets it off
+  nitroReach: 8,         // connected nitro within this many cells of the trigger goes up with it
+  nitroPower: 4,         // each nitro cell counts as this many gunpowder grains in the blast
+  sparkHead: 2,          // ticks a spark sits on a copper cell before moving on
+  sparkCool: 12,         // ticks a copper cell rests after carrying a spark
+  sparkFree: 4,          // ticks a spark painted off copper lasts
+  sparkWater: 10,        // cells a spark can travel through connected water (brine counts double)
+  spoutRate: 0.25,       // chance per tick a spout pours one cell
 };
 
 const INTERACTIONS = [
@@ -227,12 +319,35 @@ const INTERACTIONS = [
   "Meltwater from ice is warm: it needs about 10 more seconds of contact before it can refreeze. That lets an ice block on dry ground shrink, while ice sitting in a pool grows.",
   "Fire touching ice melts it to water instantly, and that water then puts the fire out as steam.",
   "Acid dissolves anything it touches except steel (20% chance per tick per acid pixel): earth, sand, water, oil, wax, ice, fire, smoke, all of it. It is used up one for one, so each pixel it eats also destroys one pixel of acid. Acid never eats other acid, so a pool of it stays put until it meets something.",
-  "Steel is the only thing that can hold acid.",
+  "Steel and glass are the only things that can hold acid (mercury can't be eaten either). Stone and slime are eaten at a quarter of the usual speed.",
   "Fire touching gunpowder lights it, and it goes off a few ticks later. The gunpowder connected to that grain within 3 cells explodes with it as one small blast.",
   "The blast's core destroys everything but steel, leaving a fireball and smoke. Further out it still destroys earth, wax and ice, but throws loose things (sand, mud, liquids, gunpowder) outward; they fly, land and settle. Steel stops the blast and shields whatever is behind it. The radius grows with the number of grains that went up.",
   "Every explosion throws shrapnel: more pieces, flying farther, the more grains went up. Shrapnel cuts straight through anything but steel, losing range for each pixel it cuts, and bounces off steel until it is spent.",
   "Gunpowder caught by a blast either catches (likeliest near the centre) and pops a few ticks later, or is thrown clear. Some thrown grains are lit and pop in mid-air or where they land; the rest survive. So a pile goes off like a string of firecrackers, scattering live powder.",
   "Shrapnel that hits gunpowder sets it off too.",
+  "Salt touching water dissolves (8% per tick): the salt grain disappears and that water cell becomes brine. Brine is heavier than water, so it settles underneath in a separate layer.",
+  "Salt and brine melt ice and snow they touch, and brine itself never freezes, so a layer of salt stops ice creeping through a pond.",
+  "Fire touching brine is put out like it would be by water, but the brine cell is left behind as salt and the fire's spot becomes steam. That steam rains down as fresh water, so boiling brine separates the salt from the water.",
+  "Lava touching water or brine sets into stone and the water flashes to steam. Lava melts ice and snow, lights oil, wax, wood, gas, gunpowder, nitro and thermite, and turns sand sinking through it into glass (2% per tick).",
+  "Ordinary fire also fuses sand into glass, but slowly (0.3% per tick), so only long fires like burning oil or embers leave glass behind.",
+  "Blasts shatter glass back into sand and throw it. Stone, like earth, is simply destroyed.",
+  "Fire lights dry wood (2% per tick), which turns it into embers. Embers burn for 7–14 seconds, throwing flames and lighting the wood around them, then crumble into ash.",
+  "Wood touching water soaks it up (the water slowly disappears into it) and the wetness spreads through the wood. Wet wood can't be lit until it dries out, which takes up to 15 s. Water touching an ember puts it out and leaves soaked wood.",
+  "Ash is light and floats on water. After about 3 seconds of touching water it turns into lye and sinks.",
+  "A seed resting on mud, or on earth with water within 3 cells, sprouts into a vine. Vines drink water they touch, pass it along their stems and use it to grow thin tendrils upward, or sideways toward nearby water. Without water they stop growing and dry out, and dry vine burns easily.",
+  "Snow is light enough to float on every liquid. It melts in 12–23 s, four times as fast while touching water. Snow with 10 cells of snow or ice stacked on it packs into ice.",
+  "Molten wax touching snow, ice or brine sets instantly, just as it does in water.",
+  "Mercury is the heaviest element, so it sinks through everything and sand, gunpowder and thermite float on it. Acid can't eat it.",
+  "Slime touching a wall or ceiling only moves 5% of the time, so it clings and creeps down slowly. Grains sinking into slime almost stop.",
+  "Acid touching lye neutralises: the acid becomes water, the lye becomes foam, and a little extra foam froths out. Foam floats up through liquids, heaps on top and pops after 4–10 s.",
+  "Mud lying under water slowly bubbles marsh gas up into the water above it. Marsh gas rises and gathers under ceilings. A flame touching it lights it, and the flame races through the whole pocket.",
+  "Thermite can't be lit by ordinary fire or embers. A blast, lava, slag or burning thermite lights it. Lit thermite burns white-hot even underwater (turning water to steam), melts touching steel into slag (4% per tick) and stone or glass into lava, and leaves slag behind.",
+  "Slag is molten steel. It lights what it touches, fuses sand and cools back into steel after 7–13 s. Water cools it into steel at once.",
+  "Nitro is stable while it sits still. If it falls more than 8 cells through air and lands, or shrapnel, a blast, a spark or a flame touches it, all the nitro connected to it within 8 cells goes off at once, each cell counting as 4 grains of gunpowder. Dropping it into a liquid is safe.",
+  "A spark on copper moves to every touching copper cell that is at rest, once per tick. Copper that just carried a spark rests for 12 ticks, so a spark runs along a wire in one direction instead of bouncing back, and a loop longer than 12 cells keeps a spark circling forever.",
+  "Sparks light gunpowder, nitro, oil, wax, wood and marsh gas they touch. A spark touching water travels through it up to 10 cells (20 through brine) and sets off copper, gunpowder and nitro on the far side. A spark painted away from copper crackles out after 4 ticks.",
+  "A blank spout copies the first loose material, flame or spark that touches it, then pours it out (25% per tick): gases upward, everything else downward first.",
+  "Void deletes anything touching it (left, right, above or below) except steel.",
 ];
 
 let W = 0, H = 0, N = 0;
@@ -265,7 +380,41 @@ function setCell(i, t) {
   else if (t === STEAM) life[i] = rint(...PROPS[STEAM].condense);
   else if (t === LWAX) life[i] = rint(...PROPS[LWAX].cool);
   else if (t === ICE) life[i] = rint(...PROPS[ICE].melt);
+  else if (t === SNOW) life[i] = rint(...PROPS[SNOW].melt);
+  else if (t === SLAG) life[i] = rint(...PROPS[SLAG].cool);
+  else if (t === EMBER || t === FOAM || t === GAS || t === TBURN) life[i] = rint(...PROPS[t].life);
+  else if (t === VINE) life[i] = 60;
+  else if (t === SPARK) life[i] = -RULES.sparkFree; // negative: a free spark counting up to nothing; positive: a spark riding copper
   else life[i] = 0;
+}
+// Small helpers for the newer elements
+const isWall = t => PROPS[t].state === "solid";
+function nb4(x, y, r) { // r = 0..3 → left, right, up, down; returns cell index or -1 off-grid
+  const nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
+  return nx < 0 || ny < 0 || nx >= W || ny >= H ? -1 : ny * W + nx;
+}
+function become(j, t) { setCell(j, t); moved[j] = 1; }
+// Heat from a source other than an ordinary flame touching cell j.
+// lvl 1 = spark, 2 = ember (wood fire), 3 = lava or slag, 4 = burning thermite.
+// (Ordinary fire has its own rules in updFire and passes lvl 0 for the newer elements.)
+function heat(j, lvl) {
+  const tt = type[j];
+  switch (tt) {
+    case OIL: if (lvl > 0 && rnd() < (lvl === 1 ? 0.5 : 0.2)) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; } break;
+    case GAS: type[j] = FIRE; life[j] = rint(...RULES.gasFlame); shade[j] = (rnd() * 255) | 0; moved[j] = 1; break;
+    case GUN: if (lvl > 0) arm(j); break;
+    case NITRO: arm(j, 0); break;
+    case WAX: if (lvl > 0 && rnd() < (lvl === 1 ? 0.3 : 0.05)) { become(j, LWAX); life[j] = PROPS[LWAX].cool[1]; } break;
+    case LWAX: if (lvl > 0) life[j] = PROPS[LWAX].cool[1]; break;
+    case WOOD: if (life[j] <= 0 && rnd() < (lvl === 2 ? RULES.woodSpread : lvl === 1 ? 0.05 : RULES.woodCatch)) become(j, EMBER); break;
+    case VINE: if (rnd() < (life[j] < 25 ? 0.25 : 0.01)) become(j, FIRE); break;
+    case SEED: if (rnd() < 0.2) become(j, FIRE); break;
+    case ICE: if (lvl >= 2) become(j, WATER); break;
+    case SNOW: become(j, WATER); break;
+    case FOAM: type[j] = EMPTY; life[j] = 0; moved[j] = 1; break;
+    case THERMITE: if (lvl >= 3) become(j, TBURN); break;
+    case SAND: if (rnd() < (lvl >= 3 ? RULES.glassFuse : lvl === 0 ? RULES.fireGlass : 0)) become(j, GLASS); break;
+  }
 }
 function move(i, j) {
   const t = type[i], l = life[i], s = shade[i];
@@ -305,17 +454,18 @@ function updMud(x, y, i) {
     const nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
     if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
     const n = ny * W + nx, tt = type[n];
-    if (tt === WATER) { life[i] = P.wet; return; }
+    if (tt === WATER) { life[i] = P.wet; if (r === 2 && rnd() < RULES.marshGas) become(n, GAS); return; }
     if (tt === MUD && life[n] - P.wick > life[i]) life[i] = life[n] - P.wick;
   }
   if (--life[i] <= 0) { type[i] = EARTH; life[i] = PROPS[EARTH].hp; moved[i] = 1; }
 }
+// Returns where the liquid went: its new cell, -1 if it stayed put, -2 if it hung back a tick mid-fall, -3 if drained.
 function updLiquid(x, y, i, t) {
   const P = PROPS[t]; let to = -1;
-  if (y + 1 >= H) { drain(i); return; }
+  if (y + 1 >= H) { drain(i); return -3; }
   {
     const b = i + W;
-    if (fallInto(t, b)) { if (type[b] === EMPTY && rnd() < RULES.fallJitter) return; to = b; }
+    if (fallInto(t, b)) { if (type[b] === EMPTY && rnd() < RULES.fallJitter) return -2; to = b; }
     else { const d = rnd() < 0.5 ? -1 : 1;
       for (let s = d, n = 0; n < 2 && to < 0; n++, s = -s) { const nx = x + s; if (nx >= 0 && nx < W && fallInto(t, b + s)) to = b + s; } }
   }
@@ -333,6 +483,7 @@ function updLiquid(x, y, i, t) {
     }
   }
   if (to >= 0) { move(i, to); if (t === WATER && rnd() < RULES.erosion) erodeAround(to); }
+  return to;
 }
 function erodeAround(j) {
   const x = j % W, y = (j / W) | 0, r = (rnd() * 4) | 0;
@@ -348,7 +499,7 @@ function updLWax(x, y, i) {
   for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
     for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
       const j = ny * W + nx, tt = type[j];
-      if (tt === WATER && (dx === 0 || dy === 0)) { setCell(i, WAX); moved[i] = 1; return; }
+      if ((tt === WATER || tt === BRINE || tt === SNOW || tt === ICE) && (dx === 0 || dy === 0)) { setCell(i, WAX); moved[i] = 1; return; }
       if (tt === FIRE) hot = true;
       else if (tt === EMPTY) { empties++; if (rnd() * empties < 1) emptyAny = j; if (dy === -1 && (emptyUp < 0 || rnd() < 0.5)) emptyUp = j; }
     } }
@@ -389,11 +540,16 @@ function updFire(x, y, i) {
         setCell(j, STEAM); moved[j] = 1;
         return;
       }
-      if (tt === OIL && rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; }
+      if (tt === BRINE) { // doused by brine: the water boils off as steam, the salt stays behind
+        become(i, STEAM); become(j, SALT);
+        return;
+      }
+      if (tt === OIL) { if (rnd() < RULES.ignite) { type[j] = FIRE; life[j] = rint(...PROPS[FIRE].oilLife); moved[j] = 1; } }
       else if (tt === ICE) { setCell(j, WATER); moved[j] = 1; }
       else if (tt === GUN) arm(j);
       else if (tt === WAX) { onWax = true; if (rnd() < RULES.waxMelt) { setCell(j, LWAX); moved[j] = 1; life[i] = Math.min(RULES.fireMax, life[i] + RULES.waxFeed); } }
       else if (tt === LWAX) life[j] = PROPS[LWAX].cool[1]; // fire keeps molten wax hot
+      else if (tt !== EMPTY) heat(j, 0);
     } }
   if (!onWax) life[i]--;
   if (y > 0 && type[i - W] === EMPTY && rnd() < RULES.fireSmokePuff) { setCell(i - W, SMOKE); life[i - W] = rint(20, 50); moved[i - W] = 1; }
@@ -423,7 +579,13 @@ function updAcid(x, y, i) {
     const r = (rnd() * 4) | 0, nx = x + (r === 0 ? -1 : r === 1 ? 1 : 0), ny = y + (r === 2 ? -1 : r === 3 ? 1 : 0);
     if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
       const j = ny * W + nx, tt = type[j];
-      if (tt !== EMPTY && tt !== STEEL && tt !== ACID) {
+      if (tt === LYE) { // neutralised: acid → water, lye → foam, plus a little froth into an open neighbour
+        become(i, WATER); become(j, FOAM);
+        for (let r2 = 0; r2 < 4; r2++) { const k = nb4(nx, ny, r2); if (k >= 0 && type[k] === EMPTY) { become(k, FOAM); break; } }
+        return;
+      }
+      const immune = tt === EMPTY || tt === STEEL || tt === ACID || tt === GLASS || tt === MERCURY;
+      if (!immune && ((tt !== STONE && tt !== SLIME) || rnd() < 0.25)) {
         type[j] = EMPTY; life[j] = 0; moved[j] = 1;
         type[i] = EMPTY; life[i] = 0; moved[i] = 1;
         return;
@@ -458,8 +620,10 @@ function processBlasts() {
   if (shards.length) updShards();
 }
 function detonate(seed) {
-  if (type[seed] !== GUN) return;            // already went up with an earlier host, was thrown, or moved away
-  const sx = seed % W, sy = (seed / W) | 0, reach2 = RULES.hostReach * RULES.hostReach;
+  const T = type[seed];
+  if (T !== GUN && T !== NITRO) return;      // already went up with an earlier host, was thrown, or moved away
+  const reach = T === NITRO ? RULES.nitroReach : RULES.hostReach;
+  const sx = seed % W, sy = (seed / W) | 0, reach2 = reach * reach;
   const tag = ++stampN, stack = [seed], cells = [];
   stampA[seed] = tag; let mx = 0, my = 0;
   while (stack.length) {
@@ -469,11 +633,11 @@ function detonate(seed) {
       const nx = x + dx, ny = y + dy;
       if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const j = ny * W + nx;
-      if (stampA[j] !== tag && type[j] === GUN && (nx - sx) ** 2 + (ny - sy) ** 2 <= reach2) { stampA[j] = tag; stack.push(j); }
+      if (stampA[j] !== tag && type[j] === T && (nx - sx) ** 2 + (ny - sy) ** 2 <= reach2) { stampA[j] = tag; stack.push(j); }
     }
   }
   const n = cells.length; for (const i of cells) { type[i] = EMPTY; life[i] = 0; }
-  explode(mx / n, my / n, n);
+  explode(mx / n, my / n, T === NITRO ? n * RULES.nitroPower : n);
 }
 function flash(j, d) {  // what a blasted cell becomes: fireball near the centre, some smoke, else air
   const r = rnd();
@@ -501,6 +665,9 @@ function explode(cx, cy, n) {
         else throwCell(j, ux, uy, d, kick, rnd() < RULES.gunLit ? rint(...RULES.litFuse) : -1);
         continue;
       }
+      if (tt === NITRO) { arm(j, 0); continue; }                                    // sympathetic detonation
+      if (tt === THERMITE) { become(j, TBURN); continue; }                          // the one thing that lights it
+      if (tt === GLASS && d > RULES.blastCore * 0.5) { type[j] = SAND; throwCell(j, ux, uy, d, kick, -1); continue; } // shatters
       const P = PROPS[tt];
       if (d > RULES.blastCore && P.movable && (P.state === "powder" || P.state === "liquid")) { throwCell(j, ux, uy, d, kick, -1); continue; }
       flash(j, d);
@@ -572,6 +739,7 @@ function updShards() {
         break;
       }
       if (tt === GUN) arm(j);   // a hit grain goes up on a short fuse
+      else if (tt === NITRO) arm(j, 0);
       else if (tt !== EMPTY) { type[j] = EMPTY; life[j] = 0; moved[j] = 1; s.left -= RULES.shardCut; }
       s.x = fx; s.y = fy; s.cx = ix; s.cy = iy; s.left -= 1;
       s.trail.unshift(j); if (s.trail.length > 3) s.trail.pop();
@@ -581,6 +749,218 @@ function updShards() {
   }
   shards = keep;
 }
+// ===================== NEWER ELEMENTS =====================
+// Salt: dissolves into a touching water cell (which becomes brine), melts ice and snow, else falls like sand.
+function updSalt(x, y, i) {
+  const j = nb4(x, y, (rnd() * 4) | 0);
+  if (j >= 0) {
+    const tt = type[j];
+    if (tt === WATER && rnd() < RULES.saltDissolve) { become(j, BRINE); type[i] = EMPTY; life[i] = 0; moved[i] = 1; return; }
+    if ((tt === ICE || tt === SNOW) && rnd() < RULES.saltMelt) { become(j, WATER); life[j] = -RULES.meltCool; }
+  }
+  updPowder(x, y, i, SALT);
+}
+function updBrine(x, y, i) {
+  const j = nb4(x, y, (rnd() * 4) | 0);
+  if (j >= 0 && (type[j] === ICE || type[j] === SNOW) && rnd() < RULES.brineMelt) { become(j, WATER); life[j] = -RULES.meltCool; }
+  updLiquid(x, y, i, BRINE);
+}
+// Lava and slag: hot liquids. Water touching them flashes to steam and they set (lava → stone, slag → steel).
+function updHotLiquid(x, y, i, t) {
+  if (t === SLAG && --life[i] <= 0) { become(i, STEEL); return; }
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if (tt === WATER || tt === BRINE) { if (dx === 0 || dy === 0) { become(i, t === LAVA ? STONE : STEEL); become(j, STEAM); return; } }
+      else if (tt === ICE || tt === SNOW) become(j, WATER);
+      else if (tt !== EMPTY && tt !== t) heat(j, 3);
+    } }
+  if (y > 0 && type[i - W] === EMPTY && rnd() < RULES.lavaPuff) {
+    if (rnd() < 0.5) { type[i - W] = FIRE; life[i - W] = rint(4, 12); shade[i - W] = (rnd() * 255) | 0; moved[i - W] = 1; }
+    else { become(i - W, SMOKE); life[i - W] = rint(20, 50); }
+  }
+  updLiquid(x, y, i, t);
+}
+// Wood: life = wetness. Water touching it soaks in (and is slowly drunk); wetness wicks through the wood
+// and dries off one tick at a time. Only dry wood (life 0) can catch.
+function updWood(x, y, i) {
+  const P = PROPS[WOOD]; let wet = -1;
+  for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0) continue; const tt = type[n];
+    if (tt === WATER || tt === BRINE) wet = n;
+    else if (tt === WOOD && life[n] - P.wick > life[i]) life[i] = life[n] - P.wick; }
+  if (wet >= 0) { life[i] = P.wet; if (rnd() < RULES.woodDrink) { type[wet] = EMPTY; life[wet] = 0; moved[wet] = 1; } }
+  else if (life[i] > 0) life[i]--;
+}
+// Ember: burning wood. Throws flames (mostly upward), lights the wood around it, crumbles into ash.
+function updEmber(x, y, i) {
+  if (--life[i] <= 0) { become(i, ASH); if (y > 0 && type[i - W] === EMPTY) { become(i - W, SMOKE); life[i - W] = rint(30, 70); } return; }
+  let empties = 0, emptyUp = -1, emptyAny = -1;
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if ((tt === WATER || tt === BRINE) && (dx === 0 || dy === 0)) { become(i, WOOD); life[i] = PROPS[WOOD].wet; become(j, STEAM); return; }
+      if (tt === EMPTY) { empties++; if (rnd() * empties < 1) emptyAny = j; if (dy === -1 && (emptyUp < 0 || rnd() < 0.5)) emptyUp = j; }
+      else heat(j, 2);
+    } }
+  if (rnd() < RULES.emberFlame) { const j = emptyUp >= 0 && rnd() < 0.75 ? emptyUp : emptyAny;
+    if (j >= 0) { type[j] = FIRE; life[j] = rint(15, 30); shade[j] = (rnd() * 255) | 0; moved[j] = 1; } }
+}
+// Ash: life = how long it has been soaking. Soaked long enough, it turns into lye.
+function updAsh(x, y, i) {
+  let soaking = false;
+  for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n >= 0 && type[n] === WATER) { soaking = true; break; } }
+  if (soaking) { if (++life[i] >= RULES.ashSoak) { become(i, LYE); return; } }
+  else if (life[i] > 0) life[i]--;
+  updPowder(x, y, i, ASH);
+}
+// Seed: once it rests on mud, or on earth with water nearby, it sprouts.
+function updSeed(x, y, i) {
+  if (updPowder(x, y, i, SEED)) return;
+  if (y + 1 >= H || rnd() >= RULES.seedSprout) return;
+  const below = type[i + W];
+  let wet = below === MUD;
+  if (!wet && below === EARTH) {
+    for (let dy = -3; dy <= 3 && !wet; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+      for (let dx = -3; dx <= 3; dx++) { const nx = x + dx; if (nx >= 0 && nx < W && type[ny * W + nx] === WATER) { wet = true; break; } } }
+  }
+  if (wet) { become(i, VINE); life[i] = 50; }
+}
+// Vine: life = water held. Drinks touching water, shares water along the stem (losing 4 per cell),
+// slowly dries out, and a well-watered cell grows a new cell into open air (or water, which it drinks).
+function vineCrowd(j) { // vine cells around j (8-neighbourhood)
+  const x = j % W, y = (j / W) | 0; let c = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue;
+    const nx = x + dx, ny = y + dy; if (nx >= 0 && ny >= 0 && nx < W && ny < H && type[ny * W + nx] === VINE) c++; }
+  return c;
+}
+function updVine(x, y, i) {
+  for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0) continue; const tt = type[n];
+    if (tt === WATER) { life[i] = Math.min(RULES.vineMax, life[i] + 10); if (rnd() < 0.01) { type[n] = EMPTY; life[n] = 0; moved[n] = 1; } }
+    else if (tt === VINE && life[n] - 4 > life[i]) life[i] = life[n] - 4; }
+  if (life[i] > 0 && rnd() < 0.02) life[i]--;
+  if (life[i] <= 40 || rnd() >= RULES.vineGrow) return;
+  // aim: toward water on this row if there is some within 6 cells, otherwise up (sometimes up-diagonal)
+  let tx = x, ty = y - 1;
+  if (rnd() < 0.35) {
+    for (let k = 1; k <= 6; k++) {
+      if (x - k >= 0 && type[i - k] === WATER) { tx = x - 1; ty = y; break; }
+      if (x + k < W && type[i + k] === WATER) { tx = x + 1; ty = y; break; }
+    }
+  }
+  if (tx === x && rnd() < 0.4) tx += rnd() < 0.5 ? -1 : 1;
+  if (tx < 0 || ty < 0 || tx >= W || ty >= H) return;
+  const j = ty * W + tx, tt = type[j];
+  if ((tt !== EMPTY && tt !== WATER) || vineCrowd(j) > 2) return;
+  setCell(j, VINE); moved[j] = 1;
+  life[j] = life[i] - RULES.vineCost; life[i] -= RULES.vineCost;
+}
+// Snow: melts on a timer (four times as fast in water); a deep enough pile packs its bottom into ice.
+function updSnow(x, y, i) {
+  let melt = 1;
+  for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n >= 0 && type[n] === WATER) { melt = 4; break; } }
+  if ((life[i] -= melt) <= 0) { become(i, WATER); return; }
+  if (updPowder(x, y, i, SNOW)) return;
+  if (rnd() < 0.02) {
+    let k = 0;
+    for (let yy = y - 1; yy >= 0 && k < RULES.snowPack; yy--) { const tt = type[yy * W + x]; if (tt !== SNOW && tt !== ICE) break; k++; }
+    if (k >= RULES.snowPack) become(i, ICE);
+  }
+}
+// Slime: touching a wall or a ceiling it only moves now and then, so it clings and creeps.
+function updSlime(x, y, i) {
+  const l = x > 0 ? type[i - 1] : STEEL, r = x < W - 1 ? type[i + 1] : STEEL, u = y > 0 ? type[i - W] : EMPTY;
+  if ((isWall(l) || isWall(r) || isWall(u)) && rnd() >= RULES.slimeCreep) return;
+  updLiquid(x, y, i, SLIME);
+}
+function updFoam(x, y, i) {
+  if (--life[i] <= 0) { type[i] = EMPTY; life[i] = 0; return; }
+  if (rnd() < 0.55) return; // drifts down lazily
+  updPowder(x, y, i, FOAM);
+}
+function updMarsh(x, y, i) {
+  if (--life[i] <= 0) { type[i] = EMPTY; life[i] = 0; return; }
+  if (y === 0) return;
+  riseMove(x, y, i);
+}
+// Lit thermite: burns white-hot as a falling powder, even underwater. Melts steel, stone and glass.
+function updTBurn(x, y, i) {
+  if (--life[i] <= 0) { if (rnd() < RULES.thermSlag) become(i, SLAG); else { become(i, SMOKE); life[i] = rint(30, 70); } return; }
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if (tt === STEEL) { if (rnd() < RULES.steelMelt) become(j, SLAG); }
+      else if (tt === STONE || tt === GLASS) { if (rnd() < RULES.stoneMelt) become(j, LAVA); }
+      else if (tt === WATER || tt === BRINE) { if (rnd() < 0.2) become(j, STEAM); }
+      else if (tt === THERMITE) { if (rnd() < RULES.thermSpread) become(j, TBURN); }
+      else if (tt === ICE || tt === SNOW) become(j, WATER);
+      else if (tt === EMPTY) { if (dy === -1 && rnd() < 0.08) { type[j] = FIRE; life[j] = rint(3, 9); shade[j] = (rnd() * 255) | 0; moved[j] = 1; } }
+      else heat(j, 4);
+    } }
+  updPowder(x, y, i, TBURN);
+}
+// Nitro: life counts cells fallen through open air. Landing after more than nitroDrop sets it off.
+// Falling into (or resting on) a liquid resets the count, and a drop held up by other nitro (part of the
+// same falling stream) keeps its count, so the stream goes off when its front lands.
+function updNitro(x, y, i) {
+  const to = updLiquid(x, y, i, NITRO);
+  if (to === -2 || to === -3) return;
+  if (to >= i + W - 1) { // went down
+    if (type[i] === EMPTY) life[to]++; else life[to] = 0;
+    return;
+  }
+  const at = to >= 0 ? to : i, ay = (at / W) | 0;
+  if (life[at] === 0) return;
+  const under = ay + 1 < H ? type[at + W] : STEEL;
+  if (under === NITRO) { if (life[at + W] === 0) life[at] = 0; return; } // resting on settled nitro settles it too
+  if (under === EMPTY) return;
+  if (PROPS[under].state === "liquid" || PROPS[under].state === "gas") { life[at] = 0; return; }
+  if (life[at] > RULES.nitroDrop) arm(at, 0); else life[at] = 0;
+}
+// Sparks. On copper (life > 0) a spark passes to every touching copper cell at rest, then leaves the copper
+// resting (copper life = rest ticks). Off copper (life < 0) it lights what it touches and crackles out.
+let zaps = []; // flat pairs: cell, last frame to draw it as electrified water
+function conduct(start) {
+  const tag = ++stampN, q = [start, 0]; stampA[start] = tag;
+  for (let h = 0; h < q.length && q.length < 400; h += 2) {
+    const j = q[h], d = q[h + 1], x = j % W, y = (j / W) | 0;
+    zaps.push(j, frame + 4);
+    for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0 || stampA[n] === tag) continue; const tt = type[n];
+      if (tt === COPPER && life[n] === 0) { type[n] = SPARK; life[n] = RULES.sparkHead; moved[n] = 1; }
+      else if (tt === GUN) arm(n);
+      else if (tt === NITRO) arm(n, 0);
+      else if (tt === WATER || tt === BRINE) { const nd = d + (tt === BRINE ? 0.5 : 1); if (nd <= RULES.sparkWater) { stampA[n] = tag; q.push(n, nd); } }
+    }
+  }
+}
+function updSpark(x, y, i) {
+  let wet = -1;
+  for (let dy = -1; dy <= 1; dy++) { const ny = y + dy; if (ny < 0 || ny >= H) continue;
+    for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx; if (nx < 0 || nx >= W) continue;
+      const j = ny * W + nx, tt = type[j];
+      if (tt === COPPER) { if (life[j] === 0) { type[j] = SPARK; life[j] = RULES.sparkHead; moved[j] = 1; } }
+      else if (tt === WATER || tt === BRINE) wet = j;
+      else if (tt !== EMPTY && tt !== SPARK) heat(j, 1);
+    } }
+  if (wet >= 0) conduct(wet);
+  if (life[i] > 0) { if (--life[i] <= 0) { type[i] = COPPER; life[i] = RULES.sparkCool; } }
+  else if (++life[i] >= 0) { type[i] = EMPTY; life[i] = 0; }
+}
+// Spout: life = the element it copied (0 while blank).
+function updSpout(x, y, i) {
+  if (life[i] === 0) {
+    for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0) continue; const tt = type[n];
+      if (tt !== EMPTY && !isWall(tt)) { life[i] = tt; return; } }
+    return;
+  }
+  if (rnd() >= RULES.spoutRate) return;
+  const t = life[i], order = PROPS[t].state === "gas" ? [2, 0, 1, 3] : rnd() < 0.5 ? [3, 0, 1, 2] : [3, 1, 0, 2];
+  for (const r of order) { const n = nb4(x, y, r); if (n >= 0 && type[n] === EMPTY) { become(n, t); if (t === SPARK) life[n] = -RULES.sparkFree; return; } }
+}
+function updVoid(x, y, i) {
+  for (let r = 0; r < 4; r++) { const n = nb4(x, y, r); if (n < 0) continue; const tt = type[n];
+    if (tt !== EMPTY && tt !== STEEL && tt !== VOID) { type[n] = EMPTY; life[n] = 0; moved[n] = 1; } }
+}
+
 function step() {
   moved.fill(0);
   for (let y = H - 1; y >= 0; y--) {
@@ -589,7 +969,8 @@ function step() {
       const x = ltr ? k : W - 1 - k, i = y * W + x;
       if (moved[i]) continue;
       const t = type[i];
-      if (t === EMPTY || t === EARTH || t === WAX || t === STEEL) continue;
+      if (t === EMPTY || t === EARTH || t === WAX || t === STEEL || t === STONE || t === GLASS) continue;
+      if (t >= SALT) { updNew(x, y, i, t); continue; }
       if (t === SAND) updPowder(x, y, i, t);
       else if (t === MUD) updMud(x, y, i);
       else if (t === WATER) updWater(x, y, i);
@@ -605,7 +986,32 @@ function step() {
   }
   for (const e of emitters) if (e.i < N && type[e.i] === EMPTY && rnd() < e.rate) setCell(e.i, e.types[e.n++ % e.types.length]);
   processBlasts();
+  if (zaps.length) { const keep = []; for (let k = 0; k < zaps.length; k += 2) if (zaps[k + 1] >= frame) keep.push(zaps[k], zaps[k + 1]); zaps = keep; }
   frame++;
+}
+function updNew(x, y, i, t) {
+  switch (t) {
+    case SALT: updSalt(x, y, i); break;
+    case BRINE: updBrine(x, y, i); break;
+    case LAVA: case SLAG: updHotLiquid(x, y, i, t); break;
+    case WOOD: updWood(x, y, i); break;
+    case EMBER: updEmber(x, y, i); break;
+    case ASH: updAsh(x, y, i); break;
+    case SEED: updSeed(x, y, i); break;
+    case VINE: updVine(x, y, i); break;
+    case SNOW: updSnow(x, y, i); break;
+    case MERCURY: updLiquid(x, y, i, t); break;
+    case SLIME: updSlime(x, y, i); break;
+    case LYE: case THERMITE: updPowder(x, y, i, t); break;
+    case FOAM: updFoam(x, y, i); break;
+    case GAS: updMarsh(x, y, i); break;
+    case TBURN: updTBurn(x, y, i); break;
+    case NITRO: updNitro(x, y, i); break;
+    case COPPER: if (life[i] > 0) life[i]--; break;
+    case SPARK: updSpark(x, y, i); break;
+    case SPOUT: updSpout(x, y, i); break;
+    case VOID: updVoid(x, y, i); break;
+  }
 }
 </script>
 
@@ -616,26 +1022,47 @@ const ctx = view.getContext("2d");
 const buf = document.createElement("canvas"), bctx = buf.getContext("2d");
 let img, px;
 
-const TOOLS = [
-  { key: "1", t: EARTH, label: "Earth" }, { key: "2", t: SAND, label: "Sand" }, { key: "3", t: WATER, label: "Water" },
-  { key: "4", t: OIL, label: "Oil" }, { key: "5", t: FIRE, label: "Fire" }, { key: "6", t: WAX, label: "Wax" },
-  { key: "7", t: ICE, label: "Ice" }, { key: "8", t: STEEL, label: "Steel" },
-  { key: "9", t: ACID, label: "Acid" },
-  { key: "g", t: GUN, label: "Gunpowder" }, { key: "0", t: EMPTY, label: "Erase" },
+// Every element has a brush, sorted into groups. The original elements keep their hotkeys.
+const GROUPS = [
+  { name: "Solids",  items: [EARTH, WAX, ICE, STEEL, STONE, GLASS, WOOD, COPPER, VINE] },
+  { name: "Powders", items: [SAND, GUN, MUD, SALT, SNOW, ASH, LYE, THERMITE, SEED, FOAM] },
+  { name: "Liquids", items: [WATER, OIL, ACID, LWAX, BRINE, LAVA, MERCURY, SLIME, NITRO, SLAG] },
+  { name: "Fire & gas", items: [FIRE, SPARK, EMBER, TBURN, SMOKE, STEAM, GAS] },
+  { name: "Gadgets", items: [SPOUT, VOID] },
 ];
-let tool = SAND, paused = false;
+const KEYS = { [EARTH]: "1", [SAND]: "2", [WATER]: "3", [OIL]: "4", [FIRE]: "5", [WAX]: "6", [ICE]: "7", [STEEL]: "8", [ACID]: "9", [GUN]: "g", [EMPTY]: "0" };
+const TOOLS = Object.entries(KEYS).map(([t, key]) => ({ key, t: +t }));
+let tool = SAND, paused = false, group = 1;
 const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
-const toolsEl = document.getElementById("tools");
-for (const tl of TOOLS) {
-  const b = document.createElement("button");
-  b.className = "tool"; b.id = "tool-" + tl.label.toLowerCase(); b.dataset.t = tl.t;
-  const sw = tl.t === EMPTY ? "background:transparent;border:1px dashed #8a8f8c" : "background:" + rgb(PROPS[tl.t].color);
-  b.innerHTML = `<i style="${sw}"></i>${tl.label}<kbd>${tl.key.toUpperCase()}</kbd>`;
-  b.onclick = () => selectTool(tl.t);
+const toolsEl = document.getElementById("tools"), groupsEl = document.getElementById("groups");
+function toolButton(t, g) {
+  const b = document.createElement("button"), label = t === EMPTY ? "Erase" : PROPS[t].name, key = KEYS[t];
+  b.className = "tool"; b.id = "tool-" + label.toLowerCase().replace(/ /g, "-"); b.dataset.t = t; b.dataset.g = g;
+  b.title = t === EMPTY ? "Erase anything" : PROPS[t].notes;
+  const sw = t === EMPTY ? "background:transparent;border:1px dashed #8a8f8c" : "background:" + rgb(PROPS[t].color);
+  b.innerHTML = `<i style="${sw}"></i>${label}${key ? `<kbd>${key.toUpperCase()}</kbd>` : ""}`;
+  b.onclick = () => selectTool(t);
   toolsEl.appendChild(b);
 }
-function selectTool(t) { tool = t; for (const b of toolsEl.children) b.setAttribute("aria-pressed", String(+b.dataset.t === t)); }
-selectTool(SAND);
+GROUPS.forEach((G, g) => {
+  const gb = document.createElement("button");
+  gb.type = "button"; gb.textContent = G.name; gb.dataset.g = g; gb.onclick = () => showGroup(g);
+  groupsEl.appendChild(gb);
+  for (const t of G.items) toolButton(t, g);
+});
+toolButton(EMPTY, -1); // Erase is always shown
+function showGroup(g) {
+  group = g;
+  for (const b of groupsEl.children) b.setAttribute("aria-pressed", String(+b.dataset.g === g));
+  for (const b of toolsEl.children) b.hidden = +b.dataset.g !== g && b.dataset.g !== "-1";
+}
+function selectTool(t) {
+  tool = t;
+  const g = GROUPS.findIndex(G => G.items.includes(t));
+  if (g >= 0 && g !== group) showGroup(g);
+  for (const b of toolsEl.children) b.setAttribute("aria-pressed", String(+b.dataset.t === t));
+}
+showGroup(1); selectTool(SAND);
 
 const sizeEl = document.getElementById("size"), sizeOut = document.getElementById("sizeOut");
 sizeEl.oninput = () => sizeOut.textContent = sizeEl.value;
@@ -658,9 +1085,11 @@ function fit() {
 new ResizeObserver(fit).observe(stage); fit();
 
 // ---- painting
-const PAINT_FILL = { [EARTH]: 1, [WAX]: 1, [ICE]: 1, [STEEL]: 1, [SAND]: 0.45, [WATER]: 0.5, [OIL]: 0.5, [FIRE]: 0.6, [ACID]: 0.5, [GUN]: 0.45, [EMPTY]: 1 };
+// How densely the brush sprinkles into empty space, by state (solids paint solid, loose things granular).
+const FILL_BY_STATE = { solid: 1, powder: 0.45, liquid: 0.5, gas: 0.35, energy: 0.6 };
+const PAINT_FILL = { [EMPTY]: 1, [SPARK]: 0.25 };
 function paintAt(cx, cy) {
-  const r = +sizeEl.value, fill = PAINT_FILL[tool];
+  const r = +sizeEl.value, fill = PAINT_FILL[tool] ?? FILL_BY_STATE[PROPS[tool].state];
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
     if (dx * dx + dy * dy > r * r) continue;
     const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= W || y >= H) continue;
@@ -668,6 +1097,12 @@ function paintAt(cx, cy) {
     if (tool === EMPTY) { type[i] = EMPTY; life[i] = 0; continue; }
     if (cur === tool) continue; // already this element: leave it alone
     if (tool === FIRE && cur === OIL) { type[i] = FIRE; life[i] = rint(...PROPS[FIRE].oilLife); continue; }
+    if (tool === FIRE && cur === WOOD) { setCell(i, EMBER); continue; }      // fire painted on wood lights it
+    if (tool === SPARK) {                                                    // sparks only go on copper or into air
+      if (cur === COPPER) { type[i] = SPARK; life[i] = RULES.sparkHead; }
+      else if (cur === EMPTY && rnd() < fill) setCell(i, SPARK);
+      continue;
+    }
     // The brush wins: anything already here is replaced outright.
     // Empty space is sprinkled at the tool's fill rate so poured elements look granular.
     if (cur !== EMPTY || rnd() < fill) setCell(i, tool);
@@ -715,6 +1150,7 @@ function hideHint() {
 // ---- rendering (ABGR little-endian)
 const pack = (r, g, b) => (255 << 24 | b << 16 | g << 8 | r) >>> 0;
 const SHARD_COLS = [pack(255, 250, 220), pack(255, 196, 90), pack(200, 96, 32)];
+const ZAP_COLS = [pack(200, 240, 255), pack(120, 200, 255)];
 const FIRE_COLS = [pack(255, 236, 140), pack(255, 190, 60), pack(255, 128, 24), pack(226, 70, 18), pack(170, 34, 10)];
 function render() {
   for (let i = 0; i < N; i++) {
@@ -737,6 +1173,36 @@ function render() {
     else if (t === WAX) { r += s * 10; g += s * 10; b += s * 12; }
     else if (t === STEEL) { const row = ((i / W) | 0), st = Math.sin(row * 1.7) * 9 + Math.sin(row * 0.31) * 6; r += st + s * 8; g += st + s * 8; b += st + s * 9; }
     else if (t === LWAX) { const heat = Math.min(1, life[i] / PROPS[LWAX].cool[1]); r += 16 * heat + s * 8; g += -24 * heat + s * 8; b += -40 * heat; }
+    else if (t >= SALT) {
+      const x = i % W, y = (i / W) | 0;
+      switch (t) {
+        case SALT: case LYE: r += s * 18; g += s * 18; b += s * 16; break;
+        case BRINE: { const sh = Math.sin(frame * 0.05 + shade[i]) * 10; r += sh * .3; g += sh * .6; b += sh * .8; break; }
+        case LAVA: { const f = Math.sin(frame * 0.07 + shade[i] * 0.1 + x * 0.3) * 0.5 + 0.5; r = 200 + 55 * f; g = 50 + 70 * f + s * 30; b = 10 + 20 * f; break; }
+        case STONE: r += s * 24; g += s * 24; b += s * 24; break;
+        case GLASS: { const glint = (x + y * 2 + (shade[i] >> 6)) % 9 === 0 ? 70 : 0; r += glint + s * 10; g += glint + s * 10; b += glint + s * 8; break; }
+        case WOOD: { const grain = Math.sin(x * 1.1 + Math.sin(y * 0.4) * 2) * 10, wet = Math.min(1, life[i] / PROPS[WOOD].wet) * 0.35;
+          r = (r + grain + s * 10) * (1 - wet); g = (g + grain * .7 + s * 8) * (1 - wet); b = (b + grain * .4 + s * 6) * (1 - wet * 0.5); break; }
+        case EMBER: { const f = rnd(); r = 150 + 100 * f; g = 30 + 70 * f * f; b = 10 + 10 * f; break; }
+        case ASH: { const soak = Math.min(1, life[i] / RULES.ashSoak) * 0.4; r = (r + s * 22) * (1 - soak); g = (g + s * 22) * (1 - soak); b = (b + s * 22) * (1 - soak); break; }
+        case SEED: r += s * 20; g += s * 20; b += s * 10; break;
+        case VINE: { const dry = 1 - Math.min(1, life[i] / 60); r += (150 - r) * dry * .7 + s * 14; g += (128 - g) * dry * .7 + s * 24; b += (52 - b) * dry * .7 + s * 10; break; }
+        case SNOW: r += s * 10; g += s * 8; b += s * 4; break;
+        case MERCURY: { const sh = Math.sin(frame * 0.06 + shade[i] + x * 0.2) * 22; r += sh + s * 8; g += sh + s * 8; b += sh + s * 8; break; }
+        case SLIME: { const sh = Math.sin(frame * 0.03 + shade[i]) * 12; r += sh + s * 10; g += s * 8; b += sh + s * 12; break; }
+        case FOAM: r += s * 30; g += s * 26; b += s * 30; break;
+        case GAS: { const a = 0.6 + Math.sin(frame * 0.04 + shade[i]) * 0.25; r = r * a + s * 14; g = g * a + s * 14; b = b * a; break; }
+        case THERMITE: { const k = shade[i] > 220 ? 40 : 0; r += k + s * 22; g += k * .6 + s * 12; b += k * .4 + s * 10; break; }
+        case TBURN: { const f = rnd(); r = 255; g = 200 + 55 * f; b = 120 + 130 * f; break; }
+        case SLAG: { const cool = 1 - Math.min(1, life[i] / PROPS[SLAG].cool[0]), c = PROPS[STEEL].color, f = Math.sin(frame * 0.08 + shade[i]) * 14;
+          r += (c[0] + 60 - r) * cool + f; g += (c[1] - g) * cool + f * .6; b += (c[2] - b) * cool; break; }
+        case NITRO: { const sh = Math.sin(frame * 0.05 + shade[i]) * 8; r += sh + s * 8; g += sh + s * 8; b += s * 6; break; }
+        case COPPER: { const glow = Math.min(1, life[i] / RULES.sparkCool); r += 50 * glow + s * 16; g += 90 * glow + s * 10; b += 120 * glow + s * 6; break; }
+        case SPARK: { const f = rnd(); r = 160 + 95 * f; g = 220 + 35 * f; b = 255; break; }
+        case SPOUT: { if (life[i] > 0 && (x + y) % 2 === 0) { const c = PROPS[life[i]].color; r = c[0] * .8; g = c[1] * .8; b = c[2] * .8; } else { r += s * 10; g += s * 10; b += s * 12; } break; }
+        case VOID: { const sw = Math.sin(frame * 0.05 + x * 0.5 + y * 0.5) * 12; r += sw + s * 8; g += s * 4; b += sw * 1.5 + s * 12; break; }
+      }
+    }
     px[i] = pack(Math.max(0, Math.min(255, r | 0)), Math.max(0, Math.min(255, g | 0)), Math.max(0, Math.min(255, b | 0)));
   }
   // shrapnel: a hot head and a cooling two-cell trail, drawn over the grid
@@ -744,6 +1210,8 @@ function render() {
   for (const p of debris) { if (p.cy < 0 || p.cy >= H) continue; const c = PROPS[p.t].color, k = (p.sh / 255 - 0.5) * 24;
     px[p.cy * W + p.cx] = p.fuse >= 0 ? SHARD_COLS[1 + (frame & 1)] : pack(Math.max(0, Math.min(255, c[0] + k | 0)), Math.max(0, Math.min(255, c[1] + k | 0)), Math.max(0, Math.min(255, c[2] + k | 0))); }
   for (const s of shards) for (let k = s.trail.length - 1; k >= 0; k--) { const i = s.trail[k]; if (i < N) px[i] = SHARD_COLS[k]; }
+  // electrified water flashes for a few frames
+  for (let k = 0; k < zaps.length; k += 2) { const i = zaps[k]; if (i < N && (type[i] === WATER || type[i] === BRINE)) px[i] = rnd() < 0.5 ? ZAP_COLS[0] : ZAP_COLS[1]; }
   bctx.putImageData(img, 0, 0);
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
@@ -777,7 +1245,7 @@ requestAnimationFrame(loop);
 const pauseBtn = document.getElementById("pause");
 function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; }
 pauseBtn.onclick = togglePause;
-function clearAll() { pending = []; shards = []; debris = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
+function clearAll() { pending = []; shards = []; debris = []; zaps = []; type.fill(0); life.fill(0); labelsEl.textContent = ""; welcomeGrid = null; welcomePristine = false; emitters = []; }
 document.getElementById("clear").onclick = clearAll;
 document.getElementById("welcome").onclick = () => buildWelcome();
 const rulesEl = document.getElementById("rules");
@@ -947,7 +1415,7 @@ function buildSink(top) {
 }
 
 function buildWelcome() {
-  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = []; debris = [];
+  type.fill(0); life.fill(0); labelsEl.textContent = ""; emitters = []; pending = []; shards = []; debris = []; zaps = [];
   const cellPx = stage.clientWidth / W, labelRows = Math.ceil(20 / cellPx);
   const band = Math.max(6, Math.round(52 / cellPx));            // keep clear of the title hint
   const areaH = H - band - SINK_ROOM, cols = W / areaH >= 1.15 ? 3 : 2, rows = Math.ceil(VIGNETTES.length / cols);
